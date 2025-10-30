@@ -1,0 +1,275 @@
+# -*- coding: utf-8 -*-
+import FreeCAD as App, FreeCADGui as Gui, Part, math
+
+# =========================
+# Documento
+# =========================
+doc_name = "Parker_DFD_Coherent"
+if App.ActiveDocument is None or App.ActiveDocument.Label != doc_name:
+    App.newDocument(doc_name)
+doc = App.ActiveDocument
+
+# =========================
+# Vectores y utilidades
+# =========================
+X_AXIS = App.Vector(1,0,0); Y_AXIS = App.Vector(0,1,0); Z_AXIS = App.Vector(0,0,1)
+def rot_to_x(): return App.Rotation(Y_AXIS, 90)
+
+def add_obj(shape, label):
+    o = doc.addObject("Part::Feature", label)
+    o.Shape = shape
+    return o
+
+def set_color(obj, rgb=(0.7,0.7,0.7), alpha=0.0):
+    try:
+        obj.ViewObject.ShapeColor = rgb
+        obj.ViewObject.Transparency = int(alpha*100)
+    except Exception:
+        pass
+
+# Materiales con meta para FEM
+MAT = {
+    'AL': {'name': 'AA-2xxx', 'rho': 2700.0, 'E': 72e9, 'nu': 0.33, 'type': 'isotropic'},
+    'STEEL': {'name': 'SS-304', 'rho': 8000.0, 'E': 200e9, 'nu': 0.30, 'type': 'isotropic'},
+    'COPPER': {'name': 'Copper', 'rho': 8960.0, 'E': 110e9, 'nu': 0.34, 'type': 'isotropic'},
+    'CFRP': {'name': 'CFRP', 'rho': 1550.0, 'Ex': 130e9, 'Ey': 10e9, 'Ez': 10e9, 'nu_xy': 0.25, 'type': 'orthotropic'},
+    'CC': {'name': 'C/C TPS', 'rho': 1600.0, 'Ex': 70e9, 'Ey': 70e9, 'Ez': 10e9, 'nu_xy': 0.2, 'type': 'orthotropic'},
+    'GLASS': {'name': 'Fused Silica', 'rho': 2200.0, 'E': 70e9, 'nu': 0.17, 'type': 'isotropic'},
+    'W': {'name': 'Tungsten', 'rho': 19300.0, 'E': 400e9, 'nu': 0.28, 'type': 'isotropic'},
+    'KAPTON': {'name': 'Kapton', 'rho': 1420.0, 'E': 2.5e9, 'nu': 0.34, 'type': 'isotropic'}
+}
+def set_mat(obj, key):
+    if not obj: return
+    m = MAT.get(key)
+    if not m: return
+    obj.addProperty("App::PropertyString","Material","Meta","").Material = m.get('name','')
+    obj.addProperty("App::PropertyMap","MaterialData","Meta","").MaterialData = {k:str(v) for k,v in m.items()}
+    obj.addProperty("App::PropertyFloat","Density","Meta","").Density = m.get('rho',0.0)
+
+# Primitivas orientadas a X (centro en cx)
+def make_cyl_x(d, L, cx=0.0, cy=0.0, cz=0.0, label="CylX"):
+    r = d/2.0
+    c = Part.makeCylinder(r, L)
+    c.Placement = App.Placement(App.Vector(cx - L/2.0, cy, cz), rot_to_x())
+    return add_obj(c, label)
+
+def make_cone_x(d1, d2, L, cx=0.0, cy=0.0, cz=0.0, label="ConeX"):
+    r1, r2 = d1/2.0, d2/2.0
+    c = Part.makeCone(r1, r2, L)
+    c.Placement = App.Placement(App.Vector(cx - L/2.0, cy, cz), rot_to_x())
+    return add_obj(c, label)
+
+def make_torus_x(R, r, cx=0.0, cy=0.0, cz=0.0, label="TorusX"):
+    t = Part.makeTorus(R, r)
+    t.Placement = App.Placement(App.Vector(cx, cy, cz), rot_to_x())
+    return add_obj(t, label)
+
+def make_box(w, d, h, cx=0.0, cy=0.0, cz=0.0, label="Box"):
+    b = Part.makeBox(w, d, h)
+    b.Placement = App.Placement(App.Vector(cx - w/2.0, cy - d/2.0, cz - h/2.0), App.Rotation())
+    return add_obj(b, label)
+
+# =========================
+# Parámetros de diseño
+# =========================
+PARKER = {
+    "tps_d": 2600.0, "tps_th": 50.0, "tps_sup_L": 420.0, "tps_sup_d1": 1800.0, "tps_sup_d2": 1200.0
+}
+BUS = { "d": 900.0, "L": 900.0 }
+PODS = { "n": 8, "d": 260.0, "L": 700.0, "R": 650.0 }
+SOLAR = { "w": 1200.0, "h": 500.0, "th": 8.0, "tilt_deg": 30.0, "hinge_off": BUS["d"]/2.0 + 80.0 }
+HGA = { "f": 350.0, "rim_r": 600.0, "th": 5.0, "side_y": BUS["d"]/2.0 + 300.0 }
+DFD = { "reactor_d": 800.0, "reactor_L": 900.0, "ring_ro": 420.0, "ring_h": 30.0, "ring_pitch": 150.0, "ring_n": 5,
+        "coil_R": 440.0, "coil_rect_w": 80.0, "coil_rect_h": 80.0, "coil_n": 4, "coil_span": 800.0 }
+RADS = { "panel_w": 800.0, "panel_h": 600.0, "th": 4.0, "mount_gap_y": 50.0, "n": 5, "gap_x": 850.0 }
+TRUSS = { "n": 3, "tube_d": 80.0, "R_attach": 550.0 }
+NOZ = { "throat_d": 300.0, "exit_d": 900.0, "L": 700.0, "fillet_r": 40.0 }
+RCS = { "off": BUS["d"]/2.0 + 140.0, "thr_d": 80.0, "thr_L": 160.0 }
+FINS = { "base": 200.0, "h": 400.0 }
+
+# Layout longitudinal (coherente en X, frente = 0)
+LAYOUT = {
+    "TPS_X": 0.0,                     # Cara frontal del TPS en X=0
+    "BUS_X": 350.0,                   # Centro del bus detrás del TPS
+    "SOLAR_X": 330.0,                 # Bisagra de paneles apenas detrás del TPS
+    "HGA_X": 420.0,                   # HGA lateral, en sombra del TPS
+    "REACTOR_X": 1200.0,              # Centro del reactor
+    "RADS_X": 1400.0,                 # Primera fila de radiadores
+    "TRUSS_X1": 1750.0,               # Inicio truss desde cola del reactor
+    "NOZZLE_X": 2400.0,               # Centro de tobera
+    "FINS_X": 2600.0                  # Cola de aletas
+}
+
+# =========================
+# Módulos
+# =========================
+def make_parker_tps(base_x=0.0):
+    # Disco TPS: cilindro fino a lo largo de X, cara frontal en base_x
+    t = Part.makeCylinder(PARKER["tps_d"]/2.0, PARKER["tps_th"])
+    t.Placement = App.Placement(App.Vector(base_x - PARKER["tps_th"], 0, 0), rot_to_x())
+    tps = add_obj(t, "TPS_Parker"); set_mat(tps, "CC"); set_color(tps, (0.06,0.06,0.06))
+    # Soporte cónico hacia atrás (sombra)
+    L = PARKER["tps_sup_L"]
+    cx = base_x - PARKER["tps_th"] - L/2.0
+    sup = make_cone_x(PARKER["tps_sup_d1"], PARKER["tps_sup_d2"], L, cx, 0, 0, "TPS_Support")
+    set_mat(sup, "AL"); set_color(sup, (0.75,0.78,0.82))
+    return [tps, sup]
+
+def make_central_bus(base_x):
+    bus = make_cyl_x(BUS["d"], BUS["L"], base_x, 0, 0, "Central_Bus")
+    set_mat(bus, "AL"); set_color(bus, (0.72,0.76,0.8))
+    # Corona de pods
+    pods=[]
+    for i in range(PODS["n"]):
+        ang = 2*math.pi*i/PODS["n"]
+        y = PODS["R"]*math.cos(ang); z = PODS["R"]*math.sin(ang)
+        p = make_cyl_x(PODS["d"], PODS["L"], base_x, y, z, f"Pod_{i:02d}")
+        set_mat(p, "AL"); set_color(p, (0.76,0.78,0.8))
+        pods.append(p)
+    return [bus] + pods
+
+def make_solar_panels(base_x):
+    panels=[]
+    tilt = math.radians(SOLAR["tilt_deg"])
+    # Centro de cada panel desplazado medio ancho en X y Z por la inclinación
+    dx = (SOLAR["w"]/2.0)*math.cos(tilt)
+    dz = (SOLAR["w"]/2.0)*math.sin(tilt)
+    for s in [-1,1]:
+        cx = base_x + dx
+        cy = s*SOLAR["hinge_off"]
+        cz = 0.0 + dz
+        p = make_box(SOLAR["w"], SOLAR["th"], SOLAR["h"], cx, cy, cz, f"Solar_{'R' if s>0 else 'L'}")
+        # Girar alrededor de Y: +tilt para lado +Y, -tilt para -Y
+        p.Placement.Rotation = App.Rotation(Y_AXIS, s*SOLAR["tilt_deg"])
+        set_mat(p, "KAPTON"); set_color(p, (0.05,0.08,0.18))
+        panels.append(p)
+    return panels
+
+def make_hga_side(base_x):
+    # Paraboloide simple por revolución alrededor de X; montada lateral en +Y
+    f, rim_r, th = HGA["f"], HGA["rim_r"], HGA["th"]
+    zs = [0, rim_r*0.25, rim_r*0.5, rim_r*0.75, rim_r]
+    def z_to_y(z): return (z*z)/(4.0*f)
+    pts = [App.Vector(0, z_to_y(z), z) for z in zs]
+    edges = [Part.makeLine(pts[i], pts[i+1]) for i in range(len(pts)-1)]
+    prof = Part.Wire(edges)
+    shell = prof.revolve(App.Vector(base_x, 0, 0), X_AXIS, 360)
+    dish = shell.makeThickness(shell.Faces, -th, 1e-2, True)
+    d = add_obj(dish, "HGA_Dish"); set_mat(d, "AL"); set_color(d, (0.86,0.86,0.9))
+    # Desplazar a lado +Y para mantener sombra del TPS
+    d.Placement.Base.y += HGA["side_y"]
+    # Feed
+    feed = make_cyl_x(140.0, 240.0, base_x + f*0.6, HGA["side_y"], 0, "HGA_Feed"); set_mat(feed,"GLASS"); set_color(feed,(0.92,0.95,1.0),0.3)
+    return [d, feed]
+
+def make_rcs_rings(base_x_list):
+    parts=[]
+    for x in base_x_list:
+        for (y,z) in [(RCS["off"],0), (-RCS["off"],0), (0,RCS["off"]), (0,-RCS["off"])]:
+            t = make_cone_x(RCS["thr_d"], RCS["thr_d"]*0.4, RCS["thr_L"], x, y, z, f"RCS_{int(x)}_{int(y)}_{int(z)}")
+            set_mat(t, "STEEL"); set_color(t, (0.5,0.5,0.55))
+            parts.append(t)
+    return parts
+
+def make_reactor_dfd(base_x):
+    # Cuerpo reactor
+    r = make_cyl_x(DFD["reactor_d"], DFD["reactor_L"], base_x, 0, 0, "Reactor")
+    set_mat(r, "STEEL"); set_color(r, (0.55,0.55,0.58))
+    # Anillos
+    rings=[]
+    x0 = base_x - DFD["reactor_L"]/2.0
+    for i in range(DFD["ring_n"]):
+        cx = x0 + i*DFD["ring_pitch"]
+        rg = make_torus_x(DFD["ring_ro"], DFD["ring_h"]/2.0, cx, 0, 0, f"Ring_{i}")
+        set_mat(rg, "COPPER"); set_color(rg, (0.82,0.56,0.22))
+        rings.append(rg)
+    # Bobinas
+    coils=[]
+    for j in range(DFD["coil_n"]):
+        y = -DFD["coil_span"]/2.0 + j*(DFD["coil_span"]/max(DFD["coil_n"]-1, 1))
+        circ = Part.makeCircle(DFD["coil_R"], App.Vector(base_x, y, 0), X_AXIS)
+        path = Part.Wire([circ])
+        p0=App.Vector(0,-DFD["coil_rect_w"]/2.0,-DFD["coil_rect_h"]/2.0)
+        p1=App.Vector(0, DFD["coil_rect_w"]/2.0,-DFD["coil_rect_h"]/2.0)
+        p2=App.Vector(0, DFD["coil_rect_w"]/2.0, DFD["coil_rect_h"]/2.0)
+        p3=App.Vector(0,-DFD["coil_rect_w"]/2.0, DFD["coil_rect_h"]/2.0)
+        prof = Part.Wire([Part.makeLine(p0,p1), Part.makeLine(p1,p2), Part.makeLine(p2,p3), Part.makeLine(p3,p0)])
+        prof.Placement = App.Placement(App.Vector(base_x, y, 0), App.Rotation(X_AXIS,0))
+        sweep = path.makePipeShell([prof], True, True)
+        c = add_obj(sweep, f"Coil_{j}"); set_mat(c, "COPPER"); set_color(c, (0.82,0.56,0.22))
+        coils.append(c)
+    return [r] + rings + coils
+
+def make_radiators(base_x):
+    panels=[]
+    for i in range(RADS["n"]):
+        cx = base_x + i*RADS["gap_x"]
+        for s in [-1,1]:
+            cy = s*(DFD["reactor_d"]/2.0 + RADS["mount_gap_y"])
+            p = make_box(RADS["panel_w"], RADS["th"], RADS["panel_h"], cx, cy, 0, f"Rad_{i}_{'R' if s>0 else 'L'}")
+            set_mat(p, "CFRP"); set_color(p, (0.12,0.12,0.12))
+            panels.append(p)
+    return panels
+
+def make_truss(base_x1, base_x2):
+    # Tres tubos desde perímetro reactor (x1) hacia anclaje tobera (x2)
+    parts=[]
+    for i in range(TRUSS["n"]):
+        ang = i*360.0/TRUSS["n"]
+        x1 = base_x1
+        y1 = math.cos(math.radians(ang))*TRUSS["R_attach"]
+        z1 = math.sin(math.radians(ang))*TRUSS["R_attach"]
+        x2, y2, z2 = base_x2, 0.0, 0.0
+        vec = App.Vector(x2-x1, y2-y1, z2-z1)
+        L = vec.Length
+        if L < 1e-3: continue
+        cyl = Part.makeCylinder(TRUSS["tube_d"]/2.0, L)
+        rot = App.Rotation(App.Vector(0,0,1), vec)
+        cyl.Placement = App.Placement(App.Vector(x1, y1, z1), rot)
+        o = add_obj(cyl, f"Truss_{i}"); set_mat(o, "STEEL"); set_color(o, (0.68,0.7,0.74))
+        parts.append(o)
+    return parts
+
+def make_nozzle(base_x):
+    noz = make_cone_x(NOZ["throat_d"], NOZ["exit_d"], NOZ["L"], base_x, 0, 0, "Nozzle")
+    try:
+        noz.Shape = noz.Shape.makeFillet(NOZ["fillet_r"], noz.Shape.Edges)
+    except Exception:
+        pass
+    set_mat(noz, "STEEL"); set_color(noz, (0.5,0.5,0.55))
+    return [noz]
+
+def make_fins(base_x):
+    fin = make_box(FINS["base"], 20.0, FINS["h"], base_x, 0, -FINS["h"]/2.0, "Fin_Bottom")
+    set_mat(fin, "CFRP"); set_color(fin, (0.18,0.18,0.2))
+    return [fin]
+
+# =========================
+# Ensamblaje coherente
+# =========================
+def main():
+    # Frontal: TPS y sombra térmica
+    tps = make_parker_tps(LAYOUT["TPS_X"])
+
+    # Bus y sensores en sombra
+    bus = make_central_bus(LAYOUT["BUS_X"])
+    sol = make_solar_panels(LAYOUT["SOLAR_X"])
+    hga = make_hga_side(LAYOUT["HGA_X"])
+
+    # Control de actitud en anillo frontal y medio
+    rcs = make_rcs_rings([LAYOUT["BUS_X"] - BUS["L"]/2.0 + 100.0,
+                          LAYOUT["REACTOR_X"] - DFD["reactor_L"]/2.0 - 100.0])
+
+    # Propulsión DFD
+    dfd = make_reactor_dfd(LAYOUT["REACTOR_X"])
+    rads = make_radiators(LAYOUT["RADS_X"])
+
+    # Estructura y tobera
+    truss = make_truss(LAYOUT["TRUSS_X1"], LAYOUT["NOZZLE_X"])
+    noz = make_nozzle(LAYOUT["NOZZLE_X"])
+    fins = make_fins(LAYOUT["FINS_X"])
+
+    doc.recompute()
+
+if __name__ == "__main__":
+    main()

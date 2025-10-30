@@ -1,0 +1,236 @@
+import FreeCAD as App
+import Part
+
+DOC = App.newDocument("CubeSat_3U_FreeCADStyle")
+
+# =========================
+# Parámetros globales
+# =========================
+# Geometría base del CubeSat
+u_size = 10.0           # tamaño de una U (cm) asumido para proporción; usa tus unidades del documento
+num_units = 3           # 3U
+wall_thickness = 0.2    # grosor de paneles/cubiertas
+rail_width = 0.4        # ancho de rieles verticales
+beam_height = 0.25      # altura de los travesaños por nivel
+frame_clearance = 0.2   # separación interna respecto a estructura
+
+# Paneles laterales (segmentación)
+side_panel_rows = 4     # número de filas visibles por cara
+side_panel_cols = 3     # número de columnas por módulo (aprox. 3 por U en imagen)
+panel_gap = 0.08        # separación entre celdas laterales
+
+# Alas solares desplegables (cada ala 1×12)
+wing_cells = 12
+wing_cell_len = 1.0
+wing_cell_wid = 2.0
+wing_panel_thk = 0.15
+hinge_block = (0.8, 0.8, 0.8)  # cubos de bisagra (lx, ly, lz)
+hinge_offset = 0.2             # separación desde esquina del módulo
+
+# Base de soporte
+base_size = (12.5, 12.5, 1.0)  # largo, ancho, alto de la base
+base_rail_w = 0.6
+bracket_size = (1.2, 1.2, 0.8) # L-brackets (simplificados en bloque macizo)
+bracket_bolt_d = 0.4           # diámetro de taladro pasante del tornillo
+
+# =========================
+# Utilidades geométricas
+# =========================
+def translate(solid, x=0, y=0, z=0):
+    solid.translate(App.Vector(x, y, z))
+    return solid
+
+def fuse_all(parts):
+    out = parts[0]
+    for p in parts[1:]:
+        out = out.fuse(p)
+    return out
+
+def level_z(level_idx):
+    # Z inferior del nivel (0..num_units-1)
+    return level_idx * u_size
+
+# =========================
+# Estructura del cuerpo
+# =========================
+def make_vertical_rails():
+    h = num_units * u_size
+    rails = []
+    for x in [0, u_size - rail_width]:
+        for y in [0, u_size - rail_width]:
+            r = Part.makeBox(rail_width, rail_width, h)
+            rails.append(r)
+    return rails
+
+def make_perimeter_beams():
+    # travesaños por nivel, cuatro por plano (rectángulo)
+    beams = []
+    for lvl in range(num_units + 1):  # uno en cada interfaz + tapa superior
+        z = level_z(lvl) - beam_height/2 if lvl < num_units else level_z(num_units) - beam_height/2
+        # bordes perimetrales: dos en X, dos en Y
+        # X-beams
+        b1 = Part.makeBox(u_size, beam_height, beam_height)  # frontal
+        translate(b1, 0, 0, z)
+        b2 = Part.makeBox(u_size, beam_height, beam_height)  # posterior
+        translate(b2, 0, u_size - beam_height, z)
+        # Y-beams
+        b3 = Part.makeBox(beam_height, u_size, beam_height)  # izquierda
+        translate(b3, 0, 0, z)
+        b4 = Part.makeBox(beam_height, u_size, beam_height)  # derecha
+        translate(b4, u_size - beam_height, 0, z)
+        beams += [b1, b2, b3, b4]
+    return beams
+
+def make_module_side_panels():
+    # paneles laterales segmentados por nivel, en X+ y Y+ (como en la imagen)
+    panels = []
+    usable_x = u_size - 2*rail_width
+    usable_y = u_size - 2*rail_width
+    cell_w_x = (usable_y - (side_panel_cols - 1)*panel_gap) / side_panel_cols
+    cell_h = (u_size - (side_panel_rows - 1)*panel_gap) / side_panel_rows
+    # por cada nivel (U)
+    for lvl in range(num_units):
+        z0 = level_z(lvl)
+        # Cara X+ (plano en x = u_size - wall_thickness)
+        x_face = u_size - wall_thickness
+        for r in range(side_panel_rows):
+            for c in range(side_panel_cols):
+                y = rail_width + c*(cell_w_x + panel_gap)
+                z = z0 + r*(cell_h + panel_gap)
+                cell = Part.makeBox(wall_thickness, cell_w_x, cell_h)
+                translate(cell, x_face, y, z)
+                panels.append(cell)
+        # Cara Y+ (plano en y = u_size - wall_thickness)
+        y_face = u_size - wall_thickness
+        cell_w_y = (usable_x - (side_panel_cols - 1)*panel_gap) / side_panel_cols
+        for r in range(side_panel_rows):
+            for c in range(side_panel_cols):
+                x = rail_width + c*(cell_w_y + panel_gap)
+                z = z0 + r*(cell_h + panel_gap)
+                cell = Part.makeBox(cell_w_y, wall_thickness, cell_h)
+                translate(cell, x, y_face, z)
+                panels.append(cell)
+    return panels
+
+def make_core_stack():
+    # núcleo rectangular apilado (caja interior) para dar masa y fusibilidad
+    h = num_units * u_size
+    core = Part.makeBox(u_size - 2*frame_clearance, u_size - 2*frame_clearance, h)
+    translate(core, frame_clearance, frame_clearance, 0)
+    return core
+
+# =========================
+# Alas solares y bisagras
+# =========================
+def make_wing(deck_origin, direction=1):
+    # deck_origin: (x,y,z) punto de referencia en el módulo superior
+    # direction: +1 a derecha (X+), -1 a izquierda (X-)
+    wing_parts = []
+    # Bisagra cúbica
+    hx, hy, hz = hinge_block
+    hinge = Part.makeBox(hx, hy, hz)
+    translate(hinge, deck_origin[0] - (hx if direction < 0 else 0),
+              deck_origin[1] + hinge_offset, deck_origin[2] + hinge_offset)
+    wing_parts.append(hinge)
+    # Panel continuo base del ala
+    wing_len = wing_cells * wing_cell_len
+    base_panel = Part.makeBox(wing_len, wing_cell_wid, wing_panel_thk)
+    # anclar al borde superior del módulo
+    anchor_x = deck_origin[0] - (wing_len if direction < 0 else 0)
+    anchor_y = deck_origin[1] + (u_size - wing_cell_wid)/2 - frame_clearance/2
+    anchor_z = deck_origin[2]
+    translate(base_panel, anchor_x, anchor_y, anchor_z)
+    wing_parts.append(base_panel)
+    # Segmentación 1×12
+    for i in range(wing_cells):
+        cell = Part.makeBox(wing_cell_len - panel_gap, wing_cell_wid - panel_gap, wing_panel_thk)
+        cx = anchor_x + i*wing_cell_len + panel_gap/2
+        cy = anchor_y + panel_gap/2
+        cz = anchor_z + wing_panel_thk  # placa de celda sobre el panel base
+        translate(cell, cx, cy, cz)
+        wing_parts.append(cell)
+    return fuse_all(wing_parts)
+
+def top_module_origin():
+    # esquina superior del módulo top (3U), en coordenadas de la caja
+    return (u_size, 0, num_units*u_size)
+
+# =========================
+# Base y soportes
+# =========================
+def make_base():
+    bx, by, bz = base_size
+    base = Part.makeBox(bx, by, bz)
+    translate(base, (u_size - bx)/2, (u_size - by)/2, -bz)  # centrada bajo el satélite
+    return base
+
+def make_base_rails():
+    bx, by, bz = base_size
+    rails = []
+    # dos carriles longitudinales
+    r1 = Part.makeBox(bx, base_rail_w, base_rail_w)
+    translate(r1, (u_size - bx)/2, (u_size - by)/2, -base_rail_w)
+    r2 = Part.makeBox(bx, base_rail_w, base_rail_w)
+    translate(r2, (u_size - bx)/2, (u_size - by)/2 + by - base_rail_w, -base_rail_w)
+    rails += [r1, r2]
+    # traviesas frontal/trasera
+    t1 = Part.makeBox(base_rail_w, by, base_rail_w)
+    translate(t1, (u_size - bx)/2, (u_size - by)/2, -base_rail_w)
+    t2 = Part.makeBox(base_rail_w, by, base_rail_w)
+    translate(t2, (u_size - bx)/2 + bx - base_rail_w, (u_size - by)/2, -base_rail_w)
+    rails += [t1, t2]
+    return rails
+
+def make_brackets_with_bolts():
+    bx, by, bz = base_size
+    brx, bry, brz = bracket_size
+    brackets = []
+    holes = []
+    corners = [
+        ((u_size - bx)/2, (u_size - by)/2, -brz),
+        ((u_size - bx)/2 + bx - brx, (u_size - by)/2, -brz),
+        ((u_size - bx)/2, (u_size - by)/2 + by - bry, -brz),
+        ((u_size - bx)/2 + bx - brx, (u_size - by)/2 + by - bry, -brz),
+    ]
+    for (x, y, z) in corners:
+        b = Part.makeBox(brx, bry, brz)
+        translate(b, x, y, z)
+        brackets.append(b)
+        # taladro pasante del tornillo
+        cyl = Part.makeCylinder(bracket_bolt_d/2, brz)
+        translate(cyl, x + brx/2, y + bry/2, z)
+        holes.append(cyl)
+    return brackets, holes
+
+# =========================
+# Construcción
+# =========================
+parts = []
+
+# Núcleo y estructura
+core = make_core_stack()
+rails = make_vertical_rails()
+beams = make_perimeter_beams()
+side_panels = make_module_side_panels()
+
+parts += [core] + rails + beams + side_panels
+
+# Alas solares: izquierda y derecha
+deck = top_module_origin()
+wing_left = make_wing(deck_origin=(0, 0, num_units*u_size), direction=-1)
+wing_right = make_wing(deck_origin=(u_size, 0, num_units*u_size), direction=+1)
+parts += [wing_left, wing_right]
+
+# Base y herrajes
+base = make_base()
+base_rails = make_base_rails()
+brackets, bolt_holes = make_brackets_with_bolts()
+parts += [base] + base_rails + brackets
+
+# Fusión y sustracción de taladros
+sat = fuse_all(parts)
+for h in bolt_holes:
+    sat = sat.cut(h)
+
+Part.show(sat)
+DOC.recompute()

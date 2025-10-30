@@ -1,0 +1,322 @@
+# -*- coding: utf-8 -*-
+import FreeCAD as App, FreeCADGui as Gui, Part, math
+
+DOC_NAME = "CassiniUltra_EnhancedShield"
+doc = App.ActiveDocument
+doc = App.newDocument(DOC_NAME) if not doc or doc.Label != DOC_NAME else doc
+App.ActiveDocument = doc
+
+# -----------------------------
+# Parámetros principales
+# -----------------------------
+P = {
+    "tank_len":9800.0, "tank_d":5200.0,
+    "hull_t":80.0, "hull_outer_d":6200.0, "liner_t":35.0,
+    "tps_front_R":3800.0, "tps_front_t":220.0, "tps_offset":700.0, "shoulder_len":1400.0,
+    "bus_len":4000.0, "bus_outer_d":6000.0, "bus_inner_d":5200.0,
+    "hga_R":2600.0, "hga_t":30.0, "hga_offset":750.0, "hga_mast_len":1700.0, "hga_mast_d":250.0,
+    "chamber_len":3200.0, "chamber_d":2600.0,
+    "throat_d":850.0, "exit_d":5400.0, "nozzle_len":4400.0,
+    "nozzle_mid_d":3200.0, "nozzle_mid_x":1300.0,
+    "gimbal_ring_ro":2700.0, "gimbal_ring_ri":2300.0, "gimbal_ring_t":140.0,
+    "rcs_thr_d":450.0, "rcs_thr_len":900.0, "rcs_ring_R":3600.0, "rcs_count":12,
+    "aux_thr_d":1100.0, "aux_thr_len":1800.0, "aux_thr_ring_R":3800.0, "aux_thr_count":12,
+    "solar_len":5500.0, "solar_w":2000.0, "solar_t":110.0,
+    "rad_len":3000.0, "rad_w":1200.0, "rad_t":60.0, "rad_z":1800.0,
+    "rad_shield_inner_d":6600.0, "rad_shield_t":180.0, "rad_shield_len":6200.0,
+    "whipple_t":60.0, "whipple_gap":250.0,
+    "parker_shield_R":2600.0, "parker_shield_t":180.0
+}
+
+# Parámetros adicionales
+P.update({
+    "cupola_R":2200.0, "cupola_t":45.0, "cupola_window_w":450.0, "cupola_window_h":720.0,
+    "cupola_ring_t":100.0, "cupola_phase_deg":15.0, "cupola_windows_n":10,
+    "whipple_layers":4, "whipple_segment_n":16, "whipple_bumper_t":12.0, "whipple_back_t":35.0,
+    "pipe_main_d":180.0, "pipe_ox_d":160.0, "pipe_fuel_d":160.0, "pipe_wall_t":4.0, "pipe_clearance":200.0,
+    "valve_len":250.0, "valve_d":250.0, "reg_len":280.0,
+    "manifold_d":550.0, "manifold_len":750.0,
+    "turbopump_len":900.0, "turbopump_d":650.0, "volute_d":750.0,
+    "av_bay_len":2000.0, "av_bay_w":1500.0, "av_bay_h":1000.0,
+    "rack_w":500.0, "rack_h":700.0, "rack_len":650.0, "rack_count":10,
+    "battery_len":650.0, "battery_w":450.0, "battery_h":400.0,
+    "strut_d":140.0, "strut_count":16, "load_ring_t":140.0,
+    "sensor_mast_len":1400.0, "sensor_mast_d":200.0,
+    "tracker_d":300.0, "tracker_len":260.0
+})
+
+# -----------------------------
+# Vectores y utilidades geométricas
+# -----------------------------
+X_AXIS=App.Vector(1,0,0); Y_AXIS=App.Vector(0,1,0); Z_AXIS=App.Vector(0,0,1)
+ROT_TO_X=App.Rotation(Y_AXIS,90)
+
+def place_x_aligned(s,L,cx=0,cy=0,cz=0):
+    s.Placement=App.Placement(App.Vector(cx-L/2,cy,cz),ROT_TO_X)
+
+def add_obj(s,n,c=None):
+    o=doc.addObject("Part::Feature",n); o.Shape=s
+    if c: o.ViewObject.ShapeColor=c
+    return o
+
+def cyl_x(d,L,cx=0,cy=0,cz=0):
+    s=Part.makeCylinder(d/2,L); place_x_aligned(s,L,cx,cy,cz); return s
+
+def cone_x(d1,d2,L,cx=0,cy=0,cz=0):
+    s=Part.makeCone(d1/2,d2/2,L); place_x_aligned(s,L,cx,cy,cz); return s
+
+def box_at(l,w,t,x,y,z):
+    b=Part.makeBox(l,w,t); b.translate(App.Vector(x,y,z)); return b
+
+def add_group(n): return doc.addObject("App::DocumentObjectGroup",n)
+
+def polar_positions(r,count,cx=0,z=0,phase=0):
+    return [(cx,r*math.cos(math.radians(phase+360*i/count)),z+r*math.sin(math.radians(phase+360*i/count))) for i in range(count)]
+# -----------------------------
+# Construcción principal: tanque, liner, casco
+# -----------------------------
+tank_cx = 0.0
+tank = add_obj(cyl_x(P["tank_d"], P["tank_len"], cx=tank_cx), "Tank", (0.2,0.6,1.0))
+liner = add_obj(cyl_x(P["tank_d"]-2*P["liner_t"], P["tank_len"]-2*P["liner_t"], cx=tank_cx),
+                "TankLiner", (0.15,0.45,0.85))
+hull = add_obj(cyl_x(P["hull_outer_d"], P["tank_len"], cx=tank_cx).cut(tank.Shape),
+               "Hull", (0.12,0.28,0.5))
+
+# -----------------------------
+# TPS (Thermal Protection System) frontal
+# -----------------------------
+cap_center_x = tank_cx + P["tank_len"]/2.0 + P["tps_offset"]
+sphere_out = Part.makeSphere(P["tps_front_R"])
+sphere_in  = Part.makeSphere(P["tps_front_R"] - P["tps_front_t"])
+for s in (sphere_out, sphere_in):
+    s.Placement = App.Placement(App.Vector(cap_center_x,0,0), App.Rotation())
+tps_box = Part.makeBox(2*P["tps_front_R"], 4*P["tps_front_R"], 4*P["tps_front_R"],
+                       App.Vector(cap_center_x, -2*P["tps_front_R"], -2*P["tps_front_R"]))
+tps_front = add_obj(sphere_out.common(tps_box).cut(sphere_in.common(tps_box)),
+                    "TPS_Front", (0.08,0.08,0.08))
+
+# Parker shield reforzado
+parker = add_obj(cyl_x(P["parker_shield_R"]*2, P["parker_shield_t"],
+                       cx=cap_center_x+P["tps_offset"]+300),
+                 "ParkerShield", (0.15,0.15,0.20))
+
+# -----------------------------
+# Whipple shield multicapa reforzado
+# -----------------------------
+whipple_layers=[]
+for i in range(P["whipple_layers"]):
+    whipple_layer = cyl_x(P["tps_front_R"]+i*P["whipple_gap"], P["whipple_bumper_t"],
+                          cx=cap_center_x+P["tps_offset"]+300+i*P["whipple_gap"])
+    whipple_layers.append(add_obj(whipple_layer, f"Whipple_Layer_{i+1}", (0.3,0.3,0.3)))
+
+# -----------------------------
+# Cupola con ventanas reforzadas
+# -----------------------------
+cupola = add_obj(cyl_x(P["cupola_R"]*2, P["cupola_t"],
+                       cx=tank_cx+P["tank_len"]+P["tps_offset"]+600),
+                 "Cupola", (0.7,0.7,0.8))
+
+cupola_windows=[]
+for i in range(P["cupola_windows_n"]):
+    angle = 2*math.pi*i/P["cupola_windows_n"]
+    win = box_at(P["cupola_window_w"], P["cupola_window_h"], P["cupola_t"],
+                 tank_cx+P["tank_len"]+P["tps_offset"]+600,
+                 P["cupola_R"]*math.cos(angle),
+                 P["cupola_R"]*math.sin(angle))
+    cupola_windows.append(add_obj(win, f"CupolaWindow_{i+1}", (0.2,0.2,0.5)))
+
+# -----------------------------
+# Feedlines (tuberías principales y auxiliares reforzadas)
+# -----------------------------
+def thicken_tube(d_outer,t_wall,L,cx=0,cy=0,cz=0):
+    s_out = cyl_x(d_outer,L,cx,cy,cz)
+    s_in  = cyl_x(max(d_outer-2*t_wall,1.0), max(L-2*t_wall,1.0), cx,cy,cz)
+    return s_out.cut(s_in)
+
+feedlines=[]
+feedlines.append(thicken_tube(P["pipe_main_d"]+2*P["pipe_wall_t"], P["pipe_wall_t"], P["pipe_clearance"], cx=tank_cx+600))
+for i in range(2):
+    feedlines.append(thicken_tube(P["pipe_ox_d"]+2*P["pipe_wall_t"], P["pipe_wall_t"], P["pipe_clearance"], cx=tank_cx+600+200*i))
+for i in range(2):
+    feedlines.append(thicken_tube(P["pipe_fuel_d"]+2*P["pipe_wall_t"], P["pipe_wall_t"], P["pipe_clearance"], cx=tank_cx+600+200*i))
+
+feedlines_objs = [add_obj(f,f"Feedline_{i+1}",(0.8,0.2,0.2)) for i,f in enumerate(feedlines)]
+
+# -----------------------------
+# RCS thrusters (anillo de control de actitud)
+# -----------------------------
+rcs_thrusters=[]
+for i,(x,y,z) in enumerate(polar_positions(P["rcs_ring_R"],P["rcs_count"])):
+    rcs_thrusters.append(add_obj(cyl_x(P["rcs_thr_d"],P["rcs_thr_len"],cx=x,cy=y,cz=z),
+                                 f"RCSThruster_{i+1}", (0.2,0.8,0.2)))
+
+# Aux thrusters (propulsión auxiliar)
+aux_thrusters=[]
+for i,(x,y,z) in enumerate(polar_positions(P["aux_thr_ring_R"],P["aux_thr_count"])):
+    aux_thrusters.append(add_obj(cyl_x(P["aux_thr_d"],P["aux_thr_len"],cx=x,cy=y,cz=z),
+                                 f"AuxThruster_{i+1}", (0.2,0.5,0.8)))
+
+# -----------------------------
+# Turbopump reforzado
+# -----------------------------
+turbopump = add_obj(cyl_x(P["turbopump_d"],P["turbopump_len"],cx=tank_cx-1200),
+                    "Turbopump",(0.7,0.5,0.3))
+
+# -----------------------------
+# Avionics bay con racks y baterías
+# -----------------------------
+av_bay = add_obj(box_at(P["av_bay_len"],P["av_bay_w"],P["av_bay_h"],
+                        tank_cx+2200,-P["av_bay_w"]/2,-P["av_bay_h"]/2),
+                 "AvionicsBay",(0.5,0.5,0.5))
+
+# Racks
+racks=[]
+for i in range(P["rack_count"]):
+    racks.append(add_obj(box_at(P["rack_len"],P["rack_w"],P["rack_h"],
+                                tank_cx+2200,-P["av_bay_w"]/2+i*(P["rack_w"]+20),-P["av_bay_h"]/2),
+                         f"Rack_{i+1}",(0.7,0.7,0.2)))
+
+# Baterías
+batteries=[]
+for i in range(P["rack_count"]):
+    batteries.append(add_obj(box_at(P["battery_len"],P["battery_w"],P["battery_h"],
+                                    tank_cx+2400,-P["av_bay_w"]/2+i*(P["battery_w"]+20),-P["av_bay_h"]/2+20),
+                             f"Battery_{i+1}",(0.8,0.8,0.5)))
+
+# -----------------------------
+# Struts (refuerzos estructurales)
+# -----------------------------
+struts=[]
+for i in range(P["strut_count"]):
+    struts.append(add_obj(cyl_x(P["strut_d"],P["av_bay_len"],
+                                cx=tank_cx+2200,cy=-P["av_bay_w"]/2+i*100,cz=-P["av_bay_h"]/2),
+                          f"Strut_{i+1}",(0.4,0.4,0.4)))
+
+# -----------------------------
+# Sensores
+# -----------------------------
+sensors=[]
+sensors.append(add_obj(cyl_x(P["sensor_mast_d"],P["sensor_mast_len"],cx=tank_cx+3200,cy=0,cz=0),
+                       "SensorMast",(0.9,0.1,0.1)))
+
+# -----------------------------
+# Parámetros extra RTG
+# -----------------------------
+P.update({
+    "rtg_body_d": 900.0, "rtg_body_len": 1800.0,
+    "rtg_shell_t": 18.0,
+    "rtg_fin_count": 16, "rtg_fin_t": 22.0, "rtg_fin_len": 1200.0, "rtg_fin_r": 460.0,
+    "rtg_tube_d": 90.0, "rtg_tube_count": 8, "rtg_tube_offset": 380.0, "rtg_tube_len": 1600.0,
+    "rtg_flange_d": 980.0, "rtg_flange_t": 40.0,
+    "rtg_relief_d": 120.0, "rtg_relief_h": 160.0,
+    "rtg_core_d": 520.0, "rtg_core_len": 820.0, "rtg_core_step": 220.0,
+    "rtg_unicouple_d": 240.0, "rtg_unicouple_len": 480.0,
+    "rtg_mli_t": 12.0, "rtg_mli_wraps": 4,
+    "rtg_arm_len": 1650.0, "rtg_arm_d": 320.0,
+    "rtg_box_l": 1600.0, "rtg_box_w": 920.0, "rtg_box_t": 420.0,
+    "rtg_arm_offset_z": 1200.0,
+    "gusset_w": 280.0, "gusset_h": 360.0, "gusset_t": 16.0
+})
+
+# -----------------------------
+# Utilidades RTG
+# -----------------------------
+def ring_cuts(d_outer, d_inner, L, cx=0, cy=0, cz=0):
+    return cyl_x(d_outer, L, cx, cy, cz).cut(cyl_x(d_inner, L, cx, cy, cz))
+
+def fin_plate(len_f, t_f, r_f, angle_deg, cx=0, cy=0, cz=0):
+    plate = Part.makeBox(len_f, t_f, 2*r_f)
+    plate.Placement = App.Placement(App.Vector(cx - len_f/2.0, -t_f/2.0, -r_f),
+                                    App.Rotation(X_AXIS, angle_deg))
+    return plate
+
+def fuse_all(shapes):
+    if not shapes: return None
+    fused = shapes[0]
+    for s in shapes[1:]:
+        fused = fused.fuse(s)
+    return fused
+
+# -----------------------------
+# Constructor RTG reforzado
+# -----------------------------
+def build_RTG(cx, arm_len, arm_d, box_l, box_w, box_t, z_offset=0.0, name="RTG"):
+    # Brazo
+    arm = cyl_x(arm_d, arm_len, cx=cx)
+    add_obj(arm, f"{name}_Arm", (0.70,0.70,0.72))
+
+    # Caja/manifold
+    box = box_at(box_l, box_w, box_t,
+                 cx + arm_len/2.0 - box_l/2.0, -box_w/2.0, -z_offset - box_t/2.0)
+    add_obj(box, f"{name}_Manifold", (0.40,0.40,0.42))
+
+    # Cuerpo
+    rtg_cx = cx + arm_len/2.0 + P["rtg_body_len"]/2.0
+    shell = cyl_x(P["rtg_body_d"], P["rtg_body_len"], cx=rtg_cx)
+    add_obj(shell, f"{name}_Shell", (0.75,0.73,0.70))
+
+    # Aletas
+    fins = [fin_plate(P["rtg_fin_len"], P["rtg_fin_t"], P["rtg_fin_r"],
+                      360.0*i/P["rtg_fin_count"], cx=rtg_cx)
+            for i in range(P["rtg_fin_count"])]
+    fins_fused = fuse_all(fins)
+    add_obj(fins_fused, f"{name}_Fins", (0.35,0.35,0.36))
+
+    # Tubos de enfriamiento
+    tubes=[]
+    for i in range(P["rtg_tube_count"]):
+        ang = 360.0*i/P["rtg_tube_count"]
+        ty = P["rtg_tube_offset"]*math.cos(math.radians(ang))
+        tz = P["rtg_tube_offset"]*math.sin(math.radians(ang))
+        t = Part.makeCylinder(P["rtg_tube_d"]/2.0, P["rtg_tube_len"])
+        t.Placement = App.Placement(App.Vector(rtg_cx-P["rtg_tube_len"]/2.0,ty,tz),ROT_TO_X)
+        tubes.append(t)
+    tubes_fused = fuse_all(tubes)
+    add_obj(tubes_fused, f"{name}_CoolingTubes", (0.55,0.56,0.60))
+
+    # Brida de montaje
+    flange = ring_cuts(P["rtg_flange_d"], P["rtg_flange_d"]-2*P["rtg_flange_t"], 120.0,
+                       cx=rtg_cx-P["rtg_body_len"]/2.0+60.0)
+    add_obj(flange, f"{name}_MountFlange", (0.70,0.70,0.72))
+
+    # Válvula alivio
+    relief = cone_x(P["rtg_relief_d"], P["rtg_relief_d"]/3.0, P["rtg_relief_h"],
+                    cx=rtg_cx+P["rtg_body_len"]/2.0-200.0)
+    add_obj(relief, f"{name}_ReliefValve", (0.45,0.45,0.48))
+
+    # Núcleo + unicouples
+    core = cyl_x(P["rtg_core_d"], P["rtg_core_len"], cx=rtg_cx)
+    add_obj(core, f"{name}_HeatSource", (0.30,0.28,0.28))
+    support = ring_cuts(P["rtg_core_d"]+160.0, P["rtg_core_d"]+40.0, P["rtg_core_step"], cx=rtg_cx-160.0)
+    add_obj(support, f"{name}_HeatSupport", (0.36,0.36,0.40))
+    unicouple = cyl_x(P["rtg_unicouple_d"], P["rtg_unicouple_len"], cx=rtg_cx+220.0)
+    add_obj(unicouple, f"{name}_SiGeUnicouple", (0.50,0.50,0.55))
+
+    # MLI (Multi Layer Insulation)
+    wraps=[]
+    for k in range(P["rtg_mli_wraps"]):
+        wraps.append(ring_cuts(P["rtg_body_d"]+2*k*P["rtg_mli_t"],
+                               P["rtg_body_d"]+2*(k*P["rtg_mli_t"]-P["rtg_mli_t"]),
+                               P["rtg_body_len"]-160.0, cx=rtg_cx))
+    mli_fused=fuse_all(wraps)
+    add_obj(mli_fused, f"{name}_MLI", (0.88,0.86,0.75))
+
+    return rtg_cx
+
+# -----------------------------
+# Integración simétrica de RTGs reforzados
+# -----------------------------
+rtg_group = add_group("RTG_Assembly")
+
+rtg_left_x  = tank_cx - P["tank_len"]/2.0 - P["rtg_arm_len"]/2.0
+rtg_right_x = tank_cx + P["tank_len"]/2.0 - P["rtg_arm_len"]/2.0
+
+build_RTG(rtg_left_x,  P["rtg_arm_len"], P["rtg_arm_d"], P["rtg_box_l"], P["rtg_box_w"], P["rtg_box_t"],  z_offset= P["rtg_arm_offset_z"],  name="RTG_Left")
+build_RTG(rtg_right_x, P["rtg_arm_len"], P["rtg_arm_d"], P["rtg_box_l"], P["rtg_box_w"], P["rtg_box_t"],  z_offset=-P["rtg_arm_offset_z"], name="RTG_Right")
+
+# -----------------------------
+# Finalización
+# -----------------------------
+doc.recompute()
+Gui.SendMsgToActiveView("ViewFit")
+print("RTGs reforzados integrados en brazos laterales. Nave espacial lista con blindaje avanzado y protección térmica mejorada.")

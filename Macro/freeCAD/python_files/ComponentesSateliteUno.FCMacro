@@ -1,0 +1,104 @@
+# -*- coding:utf-8 -*-
+import FreeCAD as App, FreeCADGui as Gui, Part, math
+
+doc_name="CassiniUltra_GreenPropulsor_Industrial_Solid"
+doc=App.ActiveDocument if App.ActiveDocument and App.ActiveDocument.Label==doc_name else App.newDocument(doc_name)
+doc=App.ActiveDocument
+
+# -----------------------------
+# Parámetros
+# -----------------------------
+P={"hull_outer_d":7000.0,"hull_t":85.0,"tank_len":11000.0,"tank_d":6000.0,"liner_t":36.0,
+   "tps_front_R":4200.0,"tps_front_t":220.0,"tps_offset":780.0,"shoulder_len":1600.0,
+   "bus_len":5200.0,"bus_outer_d":6800.0,"bus_inner_d":5600.0,
+   "frame_ring_d":4600.0,"frame_ring_t":140.0,"frame_step":800.0,"bulkhead_t":90.0,
+   "shield_shape":"box","rad_shield_inner_d":7600.0,"rad_shield_len":7600.0,"rad_shield_gap":120.0,
+   "whipple_t":80.0,"whipple_gap":300.0,"shield_box_L":7600.0,"shield_box_W":7600.0,"shield_box_H":7600.0,
+   "throat_d":900.0,"exit_d":5600.0,"nozzle_len":4600.0,"gimbal_ring_ro":2800.0,"gimbal_ring_t":160.0}
+
+# -----------------------------
+# Utilidades CassiniUltra
+# -----------------------------
+X_AXIS=App.Vector(1,0,0);Y_AXIS=App.Vector(0,1,0);Z_AXIS=App.Vector(0,0,1)
+rot_to_x=lambda:App.Rotation(Y_AXIS,90)
+def add_obj(s,n):o=doc.addObject("Part::Feature",n);o.Shape=s;return o
+def color(o,rgb): 
+    if hasattr(o,"ViewObject"):o.ViewObject.ShapeColor=rgb;return o
+def cyl_x(d,L,cx=0,cy=0,cz=0):s=Part.makeCylinder(d/2.0,L);s.Placement=App.Placement(App.Vector(cx-L/2.0,cy,cz),rot_to_x());return s
+def cone_x(d1,d2,L,cx=0,cy=0,cz=0):s=Part.makeCone(d1/2.0,d2/2.0,L);s.Placement=App.Placement(App.Vector(cx-L/2.0,cy,cz),rot_to_x());return s
+def sphere_section(R,t,cx):
+    so,si=Part.makeSphere(R),Part.makeSphere(R-t)
+    so.Placement=si.Placement=App.Placement(App.Vector(cx,0,0),App.Rotation())
+    box=Part.makeBox(2*R,4*R,4*R,App.Vector(cx,-2*R,-2*R))
+    return so.common(box).cut(si.common(box))
+def box_x(l,w,h,cx=0,cy=0,cz=0):
+    b=Part.makeBox(l,w,h);b.Placement=App.Placement(App.Vector(cx-l/2.0,cy-w/2.0,cz-h/2.0),App.Rotation());return b
+
+# -----------------------------
+# Construcción del sólido principal sin huecos
+# -----------------------------
+def build_solid():
+    # 1) Tanque cilíndrico con espesor (hull) + liner
+    tank = cyl_x(P["tank_d"], P["tank_len"], cx=0)
+    liner = cyl_x(P["tank_d"]-2*P["liner_t"], P["tank_len"]-2*P["liner_t"], cx=0)
+    liner = Part.makeCylinder((P["tank_d"]/2.0 - P["liner_t"]), P["tank_len"]-2*P["liner_t"],
+                              App.Vector(- (P["tank_len"]-2*P["liner_t"])/2.0, 0, 0), X_AXIS)
+    hull = cyl_x(P["hull_outer_d"], P["tank_len"], cx=0).cut(tank)
+
+    # 2) Domo frontal TPS y hombro de transición (fusionados)
+    cap_center_x = P["tank_len"]/2.0 + P["tps_offset"]
+    tps_front = sphere_section(P["tps_front_R"], P["tps_front_t"], cap_center_x)
+    shoulder_cx = cap_center_x - P["shoulder_len"]/2.0
+    shoulder = cone_x(2*P["tps_front_R"], P["hull_outer_d"], P["shoulder_len"], cx=shoulder_cx)
+
+    # 3) Bus y anillos/bulkheads (fusionados)
+    bus_shell = cyl_x(P["bus_outer_d"], P["bus_len"], cx=0).cut(cyl_x(P["bus_inner_d"], P["bus_len"]-2*P["hull_t"], cx=0))
+    rings=[]
+    for k in range(int(P["bus_len"]/P["frame_step"])+1):
+        cx_ring = -P["bus_len"]/2.0 + k*P["frame_step"]
+        ring = cyl_x(P["frame_ring_d"], P["frame_ring_t"], cx=cx_ring).cut(
+            cyl_x(P["frame_ring_d"]-2*P["frame_ring_t"], P["frame_ring_t"], cx=cx_ring))
+        rings.append(ring)
+
+    # 4) Boquilla integrada (corte interno para garganta)
+    nozzle_axis_cx = -P["tank_len"]/2.0 - P["nozzle_len"]/2.0
+    nozzle_body = cyl_x(P["exit_d"], P["nozzle_len"], cx=nozzle_axis_cx)
+    nozzle_core = cone_x(P["exit_d"], P["throat_d"], P["nozzle_len"], cx=nozzle_axis_cx)
+    nozzle = nozzle_body.cut(nozzle_core)
+
+    # 5) Escudo box multilayer fusionado como piel externa
+    layers=[(80.0,(0.9,0.9,0.6),"PE_Layer"),
+            (60.0,(0.3,0.3,0.3),"CFRP_Layer"),
+            (40.0,(0.5,0.5,0.7),"W_Layer")]
+    curL,curW,curH = P["shield_box_L"],P["shield_box_W"],P["shield_box_H"]
+    shield_total = None
+    for t_layer,col,name in layers:
+        outer = box_x(curL+2*t_layer,curW+2*t_layer,curH+2*t_layer,cx=0)
+        inner = box_x(curL,curW,curH,cx=0)
+        layer_solid = outer.cut(inner)
+        shield_total = layer_solid if shield_total is None else shield_total.fuse(layer_solid)
+        curL,curW,curH = curL+2*t_layer, curW+2*t_layer, curH+2*t_layer
+    # Whipple bumper
+    wh_outer = box_x(curL+2*P["whipple_gap"],curW+2*P["whipple_gap"],curH+2*P["whipple_gap"],cx=0)
+    wh_inner = box_x(curL+2*P["whipple_gap"]-2*P["whipple_t"],curW+2*P["whipple_gap"]-2*P["whipple_t"],curH+2*P["whipple_gap"]-2*P["whipple_t"],cx=0)
+    whipple = wh_outer.cut(wh_inner)
+    shield_total = shield_total.fuse(whipple)
+
+    # 6) Fusionar todo en un único sólido manifold
+    solid = hull.fuse(liner).fuse(tps_front).fuse(shoulder).fuse(bus_shell).fuse(nozzle)
+    for r in rings: solid = solid.fuse(r)
+    # Integrar shield externo
+    solid = solid.fuse(shield_total)
+
+    # Limpieza topológica
+    solid = solid.removeSplitter()
+    o = add_obj(solid,"CassiniUltra_GreenPropulsor_Solid")
+    color(o,(0.6,0.65,0.70))
+    return o
+
+# -----------------------------
+# Ejecutar
+# -----------------------------
+o = build_solid()
+App.ActiveDocument.recompute()
+Gui.SendMsgToActiveView("ViewFit")

@@ -1,0 +1,299 @@
+# -*- coding: utf-8 -*-
+# Macro: Realistic_CubeSat_Parametric (2U–3U), printable FDM, single-manifold
+# Author: Víctor & Copilot
+# Workbench: Part
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part, math
+
+DOC_NAME = "Realistic_CubeSat_Parametric"
+
+def ensure_document(name):
+    doc = App.ActiveDocument
+    if doc is None or doc.Name != name:
+        try:
+            doc = App.newDocument(name)
+        except Exception:
+            doc = App.ActiveDocument
+    return doc
+
+class Params:
+    # Bus (set bus_l = 200.0 para 2U o 300.0 para 3U)
+    bus_w = 100.0
+    bus_d = 100.0
+    bus_l = 200.0
+    wall = 2.2
+
+    # Fillets/chamfers suaves para FDM
+    bus_chamfer = 1.0
+    bus_fillet = 0.8
+    small_fillet = 0.6
+    small_chamfer = 0.6
+
+    # Rails CubeSat (simplificados)
+    add_rails = True
+    rail_w = 8.8
+    rail_h = 2.0
+    rail_inset = 2.0
+
+    # Tapas superior/inferior
+    add_caps = True
+    cap_th = 2.0
+    cap_clear = 0.3
+
+    # Bandeja electrónica interna
+    add_electronics = True
+    pcb_th = 1.6
+    pcb_count = 4
+    pcb_gap = 6.0
+    battery_box = (70.0, 35.0, 20.0)  # (w, d, h)
+    payload_box = (60.0, 60.0, 30.0)
+
+    # Wings (paneles solares)
+    wing_count = 2          # +X y -X
+    wing_sections = 2       # secciones por ala
+    panel_th = 2.0
+    frame_w = 1.4
+    include_cells = True    # False = paneles lisos
+    cell_rows = 6
+    cell_cols = 2
+    panel_to_bus_gap = 0.8  # holgura en plegado
+    wing_angle_deg = 25.0   # despliegue visual
+    wings_folded = True
+
+    # Bisagra
+    hinge_pin_d = 3.0
+    hinge_len = 24.0
+    hinge_base_t = 2.4
+    hinge_clear = 0.25      # holgura de ensamblaje
+
+    # Antenas (ejemplo: patch superior y whip inferior)
+    add_patch_top = True
+    patch_top_size = 24.0
+    patch_top_th = 2.0
+
+    add_whip = True
+    whip_diam = 2.0
+    whip_len = 140.0
+
+def make_bus_shell(p):
+    shell = Part.makeBox(p.bus_w, p.bus_d, p.bus_l)
+    inner = Part.makeBox(p.bus_w - 2*p.wall,
+                         p.bus_d - 2*p.wall,
+                         p.bus_l - 2*p.wall)
+    inner.translate(App.Vector(p.wall, p.wall, p.wall))
+    bus = shell.cut(inner)
+    # Chamfer/fillet suaves
+    try: bus = bus.makeChamfer(p.bus_chamfer, [e for e in bus.Edges])
+    except Exception: pass
+    try: bus = bus.makeFillet(p.bus_fillet, [e for e in bus.Edges])
+    except Exception: pass
+    return bus
+
+def add_rails(p, bus):
+    rails = []
+    rw, rh, inset = p.rail_w, p.rail_h, p.rail_inset
+    # Cuatro rails longitudinales (Z), cuadrados en sección con altura rh
+    positions = [
+        App.Vector(inset, inset, 0),
+        App.Vector(p.bus_w - inset - rw, inset, 0),
+        App.Vector(inset, p.bus_d - inset - rw, 0),
+        App.Vector(p.bus_w - inset - rw, p.bus_d - inset - rw, 0),
+    ]
+    for pos in positions:
+        r = Part.makeBox(rw, rw, p.bus_l)
+        r.translate(pos)
+        try: r = r.makeFillet(p.small_fillet, [e for e in r.Edges])
+        except Exception: pass
+        rails.append(r)
+    for r in rails:
+        bus = bus.fuse(r)
+    return bus
+
+def add_caps(p, bus):
+    # Tapa superior (+Z) y inferior (-Z) ligeramente solapadas para manifold
+    top = Part.makeBox(p.bus_w - 0.6, p.bus_d - 0.6, p.cap_th)
+    top.translate(App.Vector(0.3, 0.3, p.bus_l - p.cap_th + p.cap_clear))
+    bot = Part.makeBox(p.bus_w - 0.6, p.bus_d - 0.6, p.cap_th)
+    bot.translate(App.Vector(0.3, 0.3, -p.cap_clear))
+    try:
+        top = top.makeFillet(p.small_fillet, [e for e in top.Edges])
+        bot = bot.makeFillet(p.small_fillet, [e for e in bot.Edges])
+    except Exception: pass
+    return bus.fuse(top).fuse(bot)
+
+def make_panel_section(p, width, height, th):
+    slab = Part.makeBox(width, height, th)
+    # Marco perimetral: vaciado central
+    inner_w = width - 2*p.frame_w
+    inner_h = height - 2*p.frame_w
+    if inner_w > 3 and inner_h > 3:
+        inner = Part.makeBox(inner_w, inner_h, th + 0.12)
+        inner.translate(App.Vector(p.frame_w, p.frame_w, -0.06))
+        slab = slab.cut(inner)
+    if p.include_cells and inner_w > 10 and inner_h > 10:
+        dx = inner_w / p.cell_cols
+        dy = inner_h / p.cell_rows
+        cells = []
+        # Representación de celdas en bajorrelieve (fusionadas como “tiles” finos)
+        for i in range(p.cell_cols):
+            for j in range(p.cell_rows):
+                cell = Part.makeBox(dx - 0.8, dy - 0.8, 0.35)
+                cell.translate(App.Vector(p.frame_w + i*dx + 0.4,
+                                          p.frame_w + j*dy + 0.4,
+                                          th - 0.35))
+                cells.append(cell)
+        for c in cells:
+            slab = slab.fuse(c)
+    try: slab = slab.makeFillet(p.small_fillet, [e for e in slab.Edges])
+    except Exception: pass
+    return slab
+
+def make_wing(p, side='+X'):
+    # Ancho de panel ~90% del lado del bus; altura por secciones
+    panel_w = 0.9 * p.bus_d
+    section_h = (p.bus_l / p.wing_sections) - 4.0
+    th = p.panel_th
+    sections = []
+    for k in range(p.wing_sections):
+        sec = make_panel_section(p, panel_w, section_h, th)
+        z0 = 2.0 + k * (section_h + 2.0)
+        # Base posicionada fuera del bus con holgura, SIN intersección
+        if side == '+X':
+            base = App.Vector(p.bus_w + p.panel_to_bus_gap,
+                              (p.bus_d - panel_w)/2.0,
+                              z0)
+        elif side == '-X':
+            base = App.Vector(-panel_w - p.panel_to_bus_gap,
+                              (p.bus_d - panel_w)/2.0,
+                              z0)
+        else:
+            raise ValueError("side must be '+X' or '-X'")
+        sec.translate(base)
+        sections.append(sec)
+    wing = sections[0]
+    for s in sections[1:]:
+        wing = wing.fuse(s)
+
+    # Bisagra: eje cilíndrico paralelo a Z, alineado al borde del bus
+    pin = Part.makeCylinder(p.hinge_pin_d/2.0, p.hinge_len)
+    if side == '+X':
+        pin.translate(App.Vector(p.bus_w - p.hinge_clear, p.bus_d/2.0 - p.hinge_pin_d/2.0, 0))
+    else:
+        pin.translate(App.Vector(0 - p.hinge_pin_d + p.hinge_clear, p.bus_d/2.0 - p.hinge_pin_d/2.0, 0))
+    # Base de bisagra (bracket) unida al bus, con pequeño solape
+    base_b = Part.makeBox(p.hinge_base_t, p.hinge_base_t, p.hinge_len)
+    if side == '+X':
+        base_b.translate(App.Vector(p.bus_w - p.hinge_base_t + p.hinge_clear,
+                                    (p.bus_d - p.hinge_base_t)/2.0, 0))
+    else:
+        base_b.translate(App.Vector(0 - p.hinge_clear,
+                                    (p.bus_d - p.hinge_base_t)/2.0, 0))
+    try:
+        pin = pin.makeFillet(p.small_fillet, [e for e in pin.Edges])
+        base_b = base_b.makeChamfer(p.small_chamfer, [e for e in base_b.Edges])
+    except Exception: pass
+    wing = wing.fuse(pin).fuse(base_b)
+
+    # Despliegue controlado sin atravesar el bus
+    if not p.wings_folded:
+        angle = p.wing_angle_deg
+        axis = App.Vector(0,0,1)
+        hinge_point = App.Vector(p.bus_w if side == '+X' else 0, p.bus_d/2.0, 0)
+        wing = wing.rotate(hinge_point, axis, angle if side == '+X' else -angle)
+
+    return wing
+
+def add_electronics(p):
+    solids = []
+    # Stack de PCBs dentro del volumen útil
+    usable_w = p.bus_w - 2*p.wall - 4.0
+    usable_d = p.bus_d - 2*p.wall - 4.0
+    z_start = p.wall + 16.0
+    for i in range(p.pcb_count):
+        pcb = Part.makeBox(usable_w, usable_d, p.pcb_th)
+        pcb.translate(App.Vector(p.wall + 2.0,
+                                 p.wall + 2.0,
+                                 z_start + i*(p.pcb_th + p.pcb_gap)))
+        solids.append(pcb)
+    # Batería en base
+    bw, bd, bh = p.battery_box
+    bat = Part.makeBox(bw, bd, bh)
+    bat.translate(App.Vector((p.bus_w - bw)/2.0, (p.bus_d - bd)/2.0, p.wall + 4.0))
+    solids.append(bat)
+    # Payload en centro
+    pw, pd, ph = p.payload_box
+    pay = Part.makeBox(pw, pd, ph)
+    pay.translate(App.Vector((p.bus_w - pw)/2.0, (p.bus_d - pd)/2.0, p.bus_l/2.0 - ph/2.0))
+    solids.append(pay)
+    # Pequeños fillets para suavizar
+    for s in solids:
+        try: s = s.makeFillet(Params.small_fillet, [e for e in s.Edges])
+        except Exception: pass
+    return solids
+
+def add_antennas(p):
+    solids = []
+    if p.add_patch_top:
+        patch = Part.makeBox(p.patch_top_size, p.patch_top_size, p.patch_top_th)
+        patch.translate(App.Vector((p.bus_w - p.patch_top_size)/2.0,
+                                   (p.bus_d - p.patch_top_size)/2.0,
+                                   p.bus_l - p.patch_top_th))
+        try: patch = patch.makeFillet(p.small_fillet, [e for e in patch.Edges])
+        except Exception: pass
+        solids.append(patch)
+    if p.add_whip:
+        whip = Part.makeCylinder(p.whip_diam/2.0, p.whip_len)
+        whip.translate(App.Vector(2.0, 2.0, 0.0))
+        try: whip = whip.makeFillet(p.small_fillet, [e for e in whip.Edges])
+        except Exception: pass
+        solids.append(whip)
+    return solids
+
+def build_satellite(p):
+    doc = ensure_document(DOC_NAME)
+    bus = make_bus_shell(p)
+    if p.add_rails:
+        bus = add_rails(p, bus)
+    if p.add_caps:
+        bus = add_caps(p, bus)
+
+    fusion = bus
+
+    # Wings
+    sides = []
+    if p.wing_count >= 1: sides.append('+X')
+    if p.wing_count >= 2: sides.append('-X')
+    wings = [make_wing(p, s) for s in sides]
+
+    # Electrónica
+    electronics = add_electronics(p) if p.add_electronics else []
+
+    # Antenas
+    antennas = add_antennas(p)
+
+    # Fusión en orden: bus -> wings -> antennas -> electronics
+    for solid in wings + antennas + electronics:
+        try:
+            fusion = fusion.fuse(solid)
+            fusion = fusion.removeSplitter()
+        except Exception:
+            fusion = fusion.fuse(solid)
+
+    obj = doc.addObject("Part::Feature", "CubeSat_Realistic")
+    obj.Shape = fusion.removeSplitter()
+    bbox = obj.Shape.BoundBox
+    obj.Placement.Base = App.Vector(-bbox.XLength/2.0 - bbox.XMin,
+                                    -bbox.YLength/2.0 - bbox.YMin,
+                                    -bbox.ZLength/2.0 - bbox.ZMin)
+
+    Gui.ActiveDocument.ActiveView.viewAxonometric()
+    Gui.SendMsgToActiveView("ViewFit")
+    doc.recompute()
+    return obj
+
+if __name__ == "__main__":
+    # Ajusta: 200.0 (2U) o 300.0 (3U) en Params.bus_l antes de ejecutar
+    Params.wings_folded = True  # plegado para evitar intersecciones y facilitar impresión
+    build_satellite(Params)

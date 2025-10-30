@@ -1,0 +1,340 @@
+# -*- coding: utf-8 -*-
+# Macro: CubeSat_Propulsion_Realistic
+# Author: Víctor & Copilot
+# FreeCAD API: Part workbench
+
+import FreeCAD as App, FreeCADGui as Gui
+import Part, math
+
+DOC_NAME = "CubeSat_Propulsion"
+
+def ensure_document(name):
+    doc = App.ActiveDocument
+    if doc is None or doc.Name != name:
+        try:
+            doc = App.newDocument(name)
+        except Exception:
+            doc = App.ActiveDocument
+    return doc
+
+class Params:
+    # --- Bus ---
+    bus_w, bus_d, bus_l = 100.0, 100.0, 200.0   # 2U
+    wall = 2.2
+    bus_chamfer = 1.0
+    bus_fillet = 0.8
+    small_fillet = 0.6
+    small_chamfer = 0.6
+
+    # Rails
+    add_rails = True
+    rail_w, rail_h, rail_inset = 8.8, 2.0, 2.0
+
+    # Tapas
+    add_caps = True
+    cap_th, cap_clear = 2.0, 0.3
+
+    # Electrónica
+    add_electronics = True
+    pcb_th, pcb_count, pcb_gap = 1.6, 4, 6.0
+    battery_box = (70.0, 35.0, 20.0)
+    payload_box = (60.0, 60.0, 30.0)
+
+    # Paneles solares
+    wing_count, wing_sections = 2, 2
+    panel_th, frame_w = 2.0, 1.4
+    include_cells = True
+    cell_rows, cell_cols = 6, 2
+    panel_to_bus_gap = 0.8
+    wing_angle_deg = 25.0
+    wings_folded = True
+
+    # Bisagra
+    hinge_pin_d, hinge_len = 3.0, 24.0
+    hinge_base_t, hinge_clear = 2.4, 0.25
+
+    # Antenas
+    add_patch_top, patch_top_size, patch_top_th = True, 24.0, 2.0
+    add_whip, whip_diam, whip_len = True, 2.0, 140.0
+
+    # Propulsión
+    add_propulsion = True
+
+def make_bus_shell(p):
+    shell = Part.makeBox(p.bus_w, p.bus_d, p.bus_l)
+    inner = Part.makeBox(p.bus_w - 2*p.wall, p.bus_d - 2*p.wall, p.bus_l - 2*p.wall)
+    inner.translate(App.Vector(p.wall, p.wall, p.wall))
+    bus = shell.cut(inner)
+    try:
+        bus = bus.makeChamfer(p.bus_chamfer, [e for e in bus.Edges])
+    except Exception:
+        pass
+    try:
+        bus = bus.makeFillet(p.bus_fillet, [e for e in bus.Edges])
+    except Exception:
+        pass
+    return bus
+
+def add_rails(p, bus):
+    rails = []
+    positions = [
+        App.Vector(p.rail_inset, p.rail_inset, 0),
+        App.Vector(p.bus_w - p.rail_inset - p.rail_w, p.rail_inset, 0),
+        App.Vector(p.rail_inset, p.bus_d - p.rail_inset - p.rail_w, 0),
+        App.Vector(p.bus_w - p.rail_inset - p.rail_w, p.bus_d - p.rail_inset - p.rail_w, 0),
+    ]
+    for pos in positions:
+        r = Part.makeBox(p.rail_w, p.rail_w, p.bus_l)
+        r.translate(pos)
+        rails.append(r)
+    for r in rails:
+        bus = bus.fuse(r)
+    return bus
+
+def add_caps(p, bus):
+    top = Part.makeBox(p.bus_w - 0.6, p.bus_d - 0.6, p.cap_th)
+    top.translate(App.Vector(0.3, 0.3, p.bus_l - p.cap_th + p.cap_clear))
+    bot = Part.makeBox(p.bus_w - 0.6, p.bus_d - 0.6, p.cap_th)
+    bot.translate(App.Vector(0.3, 0.3, -p.cap_clear))
+    return bus.fuse(top).fuse(bot)
+
+def make_panel_section(p, width, height, th):
+    slab = Part.makeBox(width, height, th)
+    inner_w, inner_h = width - 2*p.frame_w, height - 2*p.frame_w
+    if inner_w > 3 and inner_h > 3:
+        inner = Part.makeBox(inner_w, inner_h, th + 0.1)
+        inner.translate(App.Vector(p.frame_w, p.frame_w, -0.05))
+        slab = slab.cut(inner)
+    if p.include_cells and inner_w > 10 and inner_h > 10:
+        dx, dy = inner_w / p.cell_cols, inner_h / p.cell_rows
+        for i in range(p.cell_cols):
+            for j in range(p.cell_rows):
+                cell = Part.makeBox(dx - 0.8, dy - 0.8, 0.3)
+                cell.translate(App.Vector(p.frame_w + i*dx + 0.4,
+                                          p.frame_w + j*dy + 0.4,
+                                          th - 0.3))
+                slab = slab.fuse(cell)
+    try:
+        slab = slab.makeFillet(p.small_fillet, [e for e in slab.Edges])
+    except Exception:
+        pass
+    return slab
+
+def make_wing(p, side='+X'):
+    panel_w, section_h, th = 0.9*p.bus_d, (p.bus_l / p.wing_sections) - 4.0, p.panel_th
+    sections = []
+    for k in range(p.wing_sections):
+        sec = make_panel_section(p, panel_w, section_h, th)
+        z0 = 2.0 + k*(section_h + 2.0)
+        if side == '+X':
+            base = App.Vector(p.bus_w + p.panel_to_bus_gap, (p.bus_d - panel_w)/2.0, z0)
+        else:
+            base = App.Vector(-panel_w - p.panel_to_bus_gap, (p.bus_d - panel_w)/2.0, z0)
+        sec.translate(base)
+        sections.append(sec)
+    wing = sections[0]
+    for s in sections[1:]:
+        wing = wing.fuse(s)
+
+    pin = Part.makeCylinder(p.hinge_pin_d/2.0, p.hinge_len)
+    if side == '+X':
+        pin.translate(App.Vector(p.bus_w - p.hinge_clear, p.bus_d/2.0, 0))
+    else:
+        pin.translate(App.Vector(-p.hinge_pin_d + p.hinge_clear, p.bus_d/2.0, 0))
+    try:
+        pin = pin.makeFillet(p.small_fillet, [e for e in pin.Edges])
+    except Exception:
+        pass
+    wing = wing.fuse(pin)
+
+    if not p.wings_folded:
+        hinge_point = App.Vector(p.bus_w if side == '+X' else 0, p.bus_d/2.0, 0)
+        wing = wing.rotate(hinge_point, App.Vector(0, 0, 1),
+                           p.wing_angle_deg if side == '+X' else -p.wing_angle_deg)
+    return wing
+
+def add_electronics(p):
+    solids = []
+    usable_w, usable_d = p.bus_w - 2*p.wall - 4, p.bus_d - 2*p.wall - 4
+    z_start = p.wall + 16.0
+    for i in range(p.pcb_count):
+        pcb = Part.makeBox(usable_w, usable_d, p.pcb_th)
+        pcb.translate(App.Vector(p.wall + 2, p.wall + 2, z_start + i*(p.pcb_th + p.pcb_gap)))
+        try:
+            pcb = pcb.makeFillet(p.small_fillet, [e for e in pcb.Edges])
+        except Exception:
+            pass
+        solids.append(pcb)
+    bw, bd, bh = p.battery_box
+    bat = Part.makeBox(bw, bd, bh)
+    bat.translate(App.Vector((p.bus_w - bw)/2, (p.bus_d - bd)/2, p.wall + 4))
+    try:
+        bat = bat.makeFillet(p.small_fillet, [e for e in bat.Edges])
+    except Exception:
+        pass
+    solids.append(bat)
+    pw, pd, ph = p.payload_box
+    pay = Part.makeBox(pw, pd, ph)
+    pay.translate(App.Vector((p.bus_w - pw)/2, (p.bus_d - pd)/2, p.bus_l/2 - ph/2))
+    try:
+        pay = pay.makeFillet(p.small_fillet, [e for e in pay.Edges])
+    except Exception:
+        pass
+    solids.append(pay)
+    return solids
+
+def add_antennas(p):
+    solids = []
+    if p.add_patch_top:
+        patch = Part.makeBox(p.patch_top_size, p.patch_top_size, p.patch_top_th)
+        patch.translate(App.Vector((p.bus_w - p.patch_top_size)/2,
+                                   (p.bus_d - p.patch_top_size)/2,
+                                   p.bus_l - p.patch_top_th))
+        try:
+            patch = patch.makeFillet(p.small_fillet, [e for e in patch.Edges])
+        except Exception:
+            pass
+        solids.append(patch)
+    if p.add_whip:
+        whip = Part.makeCylinder(p.whip_diam/2.0, p.whip_len)
+        whip.translate(App.Vector(2.0, 2.0, 0.0))
+        try:
+            whip = whip.makeFillet(p.small_fillet, [e for e in whip.Edges])
+        except Exception:
+            pass
+        solids.append(whip)
+    return solids
+
+# --- Propulsión / ADCS ---
+def add_reaction_wheel(p):
+    rw = Part.makeCylinder(18.0, 15.0)
+    rw.translate(App.Vector((p.bus_w - 36.0)/2,
+                            (p.bus_d - 36.0)/2,
+                            p.bus_l/2.0 - 7.5))
+    try:
+        rw = rw.makeFillet(p.small_fillet, [e for e in rw.Edges])
+    except Exception:
+        pass
+    return rw
+
+def add_tanks_and_thrusters(p):
+    solids = []
+    # Dos tanques pequeños en la parte baja
+    for i in [-1, 1]:
+        tank = Part.makeCylinder(12.5, 60.0)
+        tank.translate(App.Vector(p.bus_w/2.0 + i*20.0,
+                                  p.bus_d/2.0 - 15.0,
+                                  p.wall + 5.0))
+        try:
+            tank = tank.makeFillet(p.small_fillet, [e for e in tank.Edges])
+        except Exception:
+            pass
+        solids.append(tank)
+
+    # Tobera principal inferior (fuera de -Z para evitar coplanar)
+    nozzle = Part.makeCone(3.0, 6.0, 12.0)
+    nozzle.translate(App.Vector(p.bus_w/2.0,
+                                p.bus_d/2.0,
+                                -12.0))
+    try:
+        nozzle = nozzle.makeChamfer(p.small_chamfer, [e for e in nozzle.Edges])
+    except Exception:
+        pass
+    solids.append(nozzle)
+
+    # Cuatro toberas laterales para control
+    offsets = [
+        (p.bus_w,     p.bus_d/2.0, p.bus_l/2.0),
+        (0,           p.bus_d/2.0, p.bus_l/2.0),
+        (p.bus_w/2.0, p.bus_d,     p.bus_l/2.0),
+        (p.bus_w/2.0, 0,           p.bus_l/2.0)
+    ]
+    for ox, oy, oz in offsets:
+        thr = Part.makeCone(2.0, 4.0, 10.0)
+        thr.translate(App.Vector(ox - 2.0, oy - 2.0, oz))
+        try:
+            thr = thr.makeChamfer(p.small_chamfer, [e for e in thr.Edges])
+        except Exception:
+            pass
+        solids.append(thr)
+
+    return solids
+
+def add_sun_sensors(p):
+    sensors = []
+    size = 6.0
+    positions = [
+        (p.bus_w - 8,    p.bus_d/2.0, p.bus_l - 20),
+        (8,               p.bus_d/2.0, p.bus_l - 20),
+        (p.bus_w/2.0,     p.bus_d - 8, p.bus_l - 20),
+        (p.bus_w/2.0,     8,           p.bus_l - 20)
+    ]
+    for x, y, z in positions:
+        ss = Part.makeBox(size, size, 2.0)
+        ss.translate(App.Vector(x, y, z))
+        try:
+            ss = ss.makeFillet(p.small_fillet, [e for e in ss.Edges])
+        except Exception:
+            pass
+        sensors.append(ss)
+    return sensors
+
+def build_satellite(p):
+    doc = ensure_document(DOC_NAME)
+    bus = make_bus_shell(p)
+    if p.add_rails:
+        bus = add_rails(p, bus)
+    if p.add_caps:
+        bus = add_caps(p, bus)
+
+    fusion = bus
+
+    # Wings
+    sides = []
+    if p.wing_count >= 1: sides.append('+X')
+    if p.wing_count >= 2: sides.append('-X')
+    wings = [make_wing(p, s) for s in sides]
+
+    # Electrónica
+    electronics = add_electronics(p) if p.add_electronics else []
+
+    # Antenas
+    antennas = add_antennas(p)
+
+    # Fusiones: bus -> wings -> antennas -> electronics
+    for solid in wings + antennas + electronics:
+        try:
+            fusion = fusion.fuse(solid)
+            fusion = fusion.removeSplitter()
+        except Exception:
+            fusion = fusion.fuse(solid)
+
+    # Propulsión y ADCS
+    if p.add_propulsion:
+        rwheel = add_reaction_wheel(p)
+        tanks_thrusters = add_tanks_and_thrusters(p)
+        sun_sensors = add_sun_sensors(p)
+        for solid in [rwheel] + tanks_thrusters + sun_sensors:
+            try:
+                fusion = fusion.fuse(solid)
+                fusion = fusion.removeSplitter()
+            except Exception:
+                fusion = fusion.fuse(solid)
+
+    obj = doc.addObject("Part::Feature", "CubeSat_Propulsion_Realistic")
+    obj.Shape = fusion.removeSplitter()
+
+    bbox = obj.Shape.BoundBox
+    obj.Placement.Base = App.Vector(-bbox.XLength/2.0 - bbox.XMin,
+                                    -bbox.YLength/2.0 - bbox.YMin,
+                                    -bbox.ZLength/2.0 - bbox.ZMin)
+
+    Gui.ActiveDocument.ActiveView.viewAxonometric()
+    Gui.SendMsgToActiveView("ViewFit")
+    doc.recompute()
+    return obj
+
+if __name__ == "__main__":
+    Params.wings_folded = True   # Plegado por defecto (imprimible)
+    build_satellite(Params)
+

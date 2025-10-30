@@ -1,0 +1,282 @@
+# -*- coding: utf-8 -*-
+# Extensión: Parker-like TPS y térmica sobre CubeSat 6U
+# Autor: Víctor & Copilot
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+import math
+
+DOC_NAME = "CubeSat_6U_Parker"
+
+def ensure_document(name):
+    doc = App.ActiveDocument
+    if doc is None or doc.Name != name:
+        try:
+            doc = App.newDocument(name)
+        except Exception:
+            doc = App.ActiveDocument
+    return doc
+
+def fillet(shape, r):
+    try:
+        return shape.makeFillet(r, [e for e in shape.Edges])
+    except Exception:
+        return shape
+
+def chamfer(shape, r):
+    try:
+        return shape.makeChamfer(r, [e for e in shape.Edges])
+    except Exception:
+        return shape
+
+def box(x, y, z): return Part.makeBox(x, y, z)
+def cyl(r, h): return Part.makeCylinder(r, h)
+def cone(r1, r2, h): return Part.makeCone(r1, r2, h)
+def sphere(r): return Part.makeSphere(r)
+
+class P:
+    # Bus 6U base (puedes ajustar a tu macro anterior)
+    sx = 100.0; sy = 200.0; sz = 300.0
+    wall = 3.0
+    edge_chamfer = 1.2; edge_fillet = 0.8
+
+    # Rails (opcional)
+    add_rails = True
+    rail_size = 5.0
+    rail_offset = 2.0
+
+    # TPS (escudo Parker-like)
+    add_tps = True
+    tps_diameter = 180.0       # mayor que sección del bus
+    tps_thickness = 6.0        # disco sandwich
+    tps_cone_height = 16.0     # perfil cónico delante del disco
+    tps_tilt_deg = 5.0         # inclinación respecto a +Z
+    tps_rib_count = 12
+    tps_rib_thickness = 3.0
+    tps_rim_thickness = 3.0    # borde protector (bead)
+
+    # Sombrilla / baffles
+    add_sunshade = True
+    shade_ring_count = 3
+    shade_ring_th = 2.0
+    shade_gap = 10.0
+
+    # Gimbal solar (paneles en sombra parcial)
+    add_gimbaled_solar = True
+    solar_w = 120.0
+    solar_h = 160.0
+    solar_th = 2.2
+    solar_angle_deg = 25.0
+    hinge_th = 4.0
+    cell_nx = 6; cell_ny = 10
+
+    # Radiadores y louvres en -Z y laterales
+    add_radiators = True
+    rad_plate_th = 3.0
+    rad_louvre_count = 8
+    rad_louvre_th = 2.0
+    rad_louvre_gap = 5.0
+
+    # Canal térmico interno
+    add_heat_post = True
+    post_diameter = 20.0
+    post_fillet = 1.2
+
+    # Whipple selectivo
+    add_whipple = True
+    whipple_outer_th = 1.6
+    whipple_gap = 4.0
+    whipple_faces = ["+X", "+Y"]
+
+    # Postproceso
+    small_fillet = 0.6
+    small_chamfer = 0.6
+
+# --- Bus 6U con rails ---
+def make_bus_6u(p: P):
+    shell = box(p.sx, p.sy, p.sz)
+    inner = box(p.sx - 2*p.wall, p.sy - 2*p.wall, p.sz - 2*p.wall)
+    inner.translate(App.Vector(p.wall, p.wall, p.wall))
+    bus = shell.cut(inner)
+    if p.add_rails:
+        rail = box(p.rail_size, p.rail_size, p.sz)
+        positions = [
+            App.Vector(p.rail_offset, p.rail_offset, 0),
+            App.Vector(p.sx - p.rail_offset - p.rail_size, p.rail_offset, 0),
+            App.Vector(p.rail_offset, p.sy - p.rail_offset - p.rail_size, 0),
+            App.Vector(p.sx - p.rail_offset - p.rail_size, p.sy - p.rail_offset - p.rail_size, 0),
+        ]
+        for pos in positions:
+            r = rail.copy(); r.translate(pos); bus = bus.fuse(r)
+    bus = chamfer(bus, p.edge_chamfer)
+    bus = fillet(bus, p.edge_fillet)
+    return bus
+
+# --- TPS: disco sandwich + cono frontal + ribs y rim ---
+def make_tps(p: P, bus: Part.Shape):
+    R = p.tps_diameter/2.0
+    # Disco sandwich
+    disk = cyl(R, p.tps_thickness)
+    disk.translate(App.Vector(p.sx/2 - R, p.sy/2 - R, p.sz))  # en el top (+Z)
+
+    # Cono frontal (nariz)
+    nose = cone(R, R*0.6, p.tps_cone_height)
+    nose.translate(App.Vector(p.sx/2, p.sy/2, p.sz + p.tps_thickness))
+
+    # Borde protector (rim)
+    rim = cyl(R, p.tps_rim_thickness)
+    rim.translate(App.Vector(p.sx/2 - R, p.sy/2 - R, p.sz - p.tps_rim_thickness))
+
+    # Ribs radiales
+    ribs = []
+    for i in range(p.tps_rib_count):
+        ang = 360.0*i/p.tps_rib_count
+        rib = box(p.tps_rib_thickness, R*1.9, p.tps_thickness*0.8)
+        rib.translate(App.Vector(p.sx/2 - p.tps_rib_thickness/2,
+                                 p.sy/2 - R*0.95,
+                                 p.sz))
+        rib = rib.rotate(App.Vector(p.sx/2, p.sy/2, p.sz), App.Vector(0,0,1), ang)
+        ribs.append(rib)
+
+    # Fusión y tilt
+    tps = disk
+    for r in ribs: tps = tps.fuse(chamfer(r, p.small_chamfer))
+    tps = tps.fuse(nose).fuse(rim)
+    if abs(p.tps_tilt_deg) > 1e-6:
+        tps = tps.rotate(App.Vector(p.sx/2, p.sy/2, p.sz), App.Vector(0,1,0), p.tps_tilt_deg)
+    return fillet(tps, p.small_fillet)
+
+# --- Sombrilla: anillos concéntricos detrás del TPS ---
+def make_sunshade(p: P):
+    solids = []
+    R = p.tps_diameter/2.0 - 6.0
+    for i in range(p.shade_ring_count):
+        ringR = R - i*(p.shade_gap)
+        if ringR <= 10: break
+        ring = cyl(ringR, p.shade_ring_th)
+        ring.translate(App.Vector(p.sx/2 - ringR, p.sy/2 - ringR, p.sz - (i+1)*p.shade_ring_th - 4))
+        solids.append(fillet(ring, 0.4))
+    return solids
+
+# --- Panel solar con celdas ---
+def make_panel_with_cells(w, h, t, nx, ny):
+    frame = box(w, h, t)
+    cells = []
+    cw = w/nx; ch = h/ny
+    for i in range(nx):
+        for j in range(ny):
+            cell = box(cw*0.88, ch*0.88, t*0.5)
+            cell.translate(App.Vector(i*cw + (cw*0.12)/2, j*ch + (ch*0.12)/2, t))
+            cells.append(cell)
+    panel = frame
+    for c in cells: panel = panel.fuse(c)
+    return fillet(panel, 0.5)
+
+# --- Arrays solares en gimbal, bajo sombra del TPS ---
+def make_gimbaled_arrays(p: P):
+    panels = []
+    # Dos paneles a ±Y, pivotando en eje X
+    for side, y in [('+Y', p.sy), ('-Y', 0 - p.solar_th)]:
+        panel = make_panel_with_cells(p.solar_w, p.solar_h, p.solar_th, p.cell_nx, p.cell_ny)
+        # bisagra: prisma grueso al borde del bus
+        hinge = box(p.hinge_th, p.solar_w, p.solar_th)
+        if side == '+Y':
+            base = App.Vector(p.sx/2 - p.solar_w/2, p.sy + p.solar_th, p.sz/2 - p.solar_h/2)
+            panel.translate(App.Vector(base.x, base.y, base.z))
+            hinge.translate(App.Vector(p.sx/2 - p.solar_w/2 - p.hinge_th, p.sy, p.sz/2 - p.solar_h/2))
+        else:
+            base = App.Vector(p.sx/2 - p.solar_w/2, -p.solar_th - p.hinge_th, p.sz/2 - p.solar_h/2)
+            panel.translate(App.Vector(base.x, base.y, base.z))
+            hinge.translate(App.Vector(p.sx/2 - p.solar_w/2 - p.hinge_th, 0 - p.hinge_th, p.sz/2 - p.solar_h/2))
+        # rotación “gimbal” alrededor de X para el ángulo
+        axis_pt = App.Vector(p.sx/2, (p.sy if side=='+Y' else 0), p.sz/2)
+        panel = panel.rotate(axis_pt, App.Vector(1,0,0), (p.solar_angle_deg if side=='+Y' else -p.solar_angle_deg))
+        panels.append(fillet(hinge.fuse(panel), 0.6))
+    return panels
+
+# --- Radiadores y louvres en -Z ---
+def make_radiators_with_louvres(p: P):
+    solids = []
+    # Placa en cara inferior (-Z)
+    plate = box(p.sx - 2*p.wall, p.sy - 2*p.wall, p.rad_plate_th)
+    plate.translate(App.Vector(p.wall, p.wall, 0 - p.rad_plate_th))
+    solids.append(chamfer(plate, 0.6))
+    # Lamas paralelas en +X
+    pitch = p.rad_louvre_th + p.rad_louvre_gap
+    count = min(p.rad_louvre_count, int((p.sx - 2*p.wall)/pitch))
+    for i in range(count):
+        lx = p.wall + i*pitch
+        louvre = box(p.rad_louvre_th, p.sy - 2*p.wall, p.rad_plate_th*0.8)
+        louvre.translate(App.Vector(lx, p.wall, 0 - p.rad_plate_th*0.8))
+        solids.append(fillet(louvre, 0.4))
+    return solids
+
+# --- Canal térmico interno (heat post) conectando TPS con masa del bus ---
+def make_heat_post(p: P):
+    post = cyl(p.post_diameter/2.0, p.sz/2)
+    post.translate(App.Vector(p.sx/2 - p.post_diameter/2.0,
+                              p.sy/2 - p.post_diameter/2.0,
+                              p.sz/2))
+    return fillet(post, p.post_fillet)
+
+# --- Whipple selectivo en caras laterales ---
+def make_whipple_panels(p: P):
+    solids = []
+    for face in p.whipple_faces:
+        if face == "+X":
+            plate = box(p.whipple_outer_th, p.sy, p.sz)
+            plate.translate(App.Vector(p.sx + 0.6, 0, 0))
+        elif face == "+Y":
+            plate = box(p.sx, p.whipple_outer_th, p.sz)
+            plate.translate(App.Vector(0, p.sy + 0.6, 0))
+        else:
+            continue
+        solids.append(chamfer(plate, 0.5))
+    return solids
+
+# --- Construcción principal ---
+def build_satellite_parker(p: P):
+    doc = ensure_document(DOC_NAME)
+    fusion = make_bus_6u(p)
+
+    # TPS frontal y sunshade
+    if p.add_tps:
+        fusion = fusion.fuse(make_tps(p, fusion))
+    if p.add_sunshade:
+        for s in make_sunshade(p):
+            fusion = fusion.fuse(s)
+
+    # Canal térmico y radiadores
+    if p.add_heat_post:
+        fusion = fusion.fuse(make_heat_post(p))
+    if p.add_radiators:
+        for s in make_radiators_with_louvres(p):
+            fusion = fusion.fuse(s)
+
+    # Arrays solares en gimbal
+    if p.add_gimbaled_solar:
+        for s in make_gimbaled_arrays(p):
+            fusion = fusion.fuse(s)
+
+    # Whipple selectivo
+    if p.add_whipple:
+        for s in make_whipple_panels(p):
+            fusion = fusion.fuse(s)
+
+    # Limpieza y centrado
+    try: fusion = fusion.removeSplitter()
+    except Exception: pass
+    obj = doc.addObject("Part::Feature", "CubeSat_6U_Parker")
+    obj.Shape = fusion
+    bbox = obj.Shape.BoundBox
+    obj.Placement.Base = App.Vector(-bbox.XMin - bbox.XLength/2,
+                                    -bbox.YMin - bbox.YLength/2,
+                                    -bbox.ZMin - bbox.ZLength/2)
+    Gui.ActiveDocument.ActiveView.viewAxonometric()
+    Gui.SendMsgToActiveView("ViewFit")
+    doc.recompute()
+    return obj
+
+if __name__ == "__main__":
+    build_satellite_parker(P)

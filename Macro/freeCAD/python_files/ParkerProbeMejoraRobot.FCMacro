@@ -1,0 +1,323 @@
+# -*- coding: utf-8 -*-
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+import math
+
+# =========================
+# Helpers básicos y seguros
+# =========================
+
+def mm(x_m):
+    return float(x_m) * 1000.0
+
+def V(x, y, z):
+    # Vector en metros
+    return App.Vector(float(x), float(y), float(z))
+
+def mmV(v_m):
+    return App.Vector(mm(v_m.x), mm(v_m.y), mm(v_m.z))
+
+def add_props(obj, *, material=None, density_kg_m3=None, mass_override_kg=None):
+    if not hasattr(obj, "Material"):
+        obj.addProperty("App::PropertyString", "Material", "MassProps", "Material")
+    if not hasattr(obj, "Density_kg_m3"):
+        obj.addProperty("App::PropertyFloat", "Density_kg_m3", "MassProps", "Densidad [kg/m^3]")
+    if not hasattr(obj, "Volume_m3"):
+        obj.addProperty("App::PropertyFloat", "Volume_m3", "MassProps", "Volumen [m^3]")
+    if not hasattr(obj, "Mass_kg"):
+        obj.addProperty("App::PropertyFloat", "Mass_kg", "MassProps", "Masa [kg]")
+
+    vol_m3 = 0.0
+    try:
+        vol_m3 = obj.Shape.Volume / 1e9
+    except Exception:
+        pass
+
+    obj.Volume_m3 = vol_m3
+    if material:
+        obj.Material = material
+    if density_kg_m3 is not None:
+        obj.Density_kg_m3 = float(density_kg_m3)
+        obj.Mass_kg = vol_m3 * float(density_kg_m3)
+    if mass_override_kg is not None:
+        obj.Mass_kg = float(mass_override_kg)
+
+def ensure_str_prop(obj, name, value, group="Info", tip=""):
+    if not hasattr(obj, name):
+        obj.addProperty("App::PropertyString", name, group, tip or name)
+    setattr(obj, name, value)
+
+def ensure_float_prop(obj, name, value, group="Info", tip=""):
+    if not hasattr(obj, name):
+        obj.addProperty("App::PropertyFloat", name, group, tip or name)
+    setattr(obj, name, float(value))
+
+def ensure_bool_prop(obj, name, value, group="Info", tip=""):
+    if not hasattr(obj, name):
+        obj.addProperty("App::PropertyBool", name, group, tip or name)
+    setattr(obj, name, bool(value))
+
+def ensure_notes(obj, text):
+    ensure_str_prop(obj, "Notes", text, group="Info", tip="Notas")
+
+def ring_torus(radius_m, thickness_m, z_m=0.0, name="Ring", material="Ti-6Al-4V", density_kg_m3=4420):
+    # Torus estable en versiones de FreeCAD (evita Part.Torus -> usamos Part.makeTorus)
+    obj = App.ActiveDocument.addObject("Part::Feature", name)
+    obj.Shape = Part.makeTorus(mm(radius_m), mm(thickness_m/2.0))
+    obj.Placement.Base = V(0, 0, mm(z_m))  # torus centrado en XY, eje Z
+    add_props(obj, material=material, density_kg_m3=density_kg_m3)
+    return obj
+
+def cylinder_between(p1_m, p2_m, radius_m, name, material="Ti-6Al-4V", density_kg_m3=4420):
+    # Crea un cilindro (eje Z por defecto) y lo rota/coloca entre dos puntos en metros
+    vec = p2_m.sub(p1_m)
+    length = vec.Length
+    if length <= 0:
+        length = 1e-6
+    cyl = App.ActiveDocument.addObject("Part::Feature", name)
+    cyl.Shape = Part.makeCylinder(mm(radius_m), mm(length))
+    mid = V((p1_m.x + p2_m.x)/2.0, (p1_m.y + p2_m.y)/2.0, (p1_m.z + p2_m.z)/2.0)
+    cyl.Placement.Base = mmV(mid)
+    # Orienta eje Z hacia vec
+    rot = App.Rotation(App.Vector(0,0,1), vec)
+    cyl.Placement.Rotation = rot
+    add_props(cyl, material=material, density_kg_m3=density_kg_m3)
+    return cyl
+
+# =========================
+# Constructores de subsistemas
+# =========================
+
+def make_bus(params):
+    r = params["Bus_diam_m"]/2.0
+    h = params["Bus_height_m"]
+    z0 = params["z_base"]
+    bus = App.ActiveDocument.addObject("Part::Feature", "Bus")
+    bus.Shape = Part.makeCylinder(mm(r), mm(h))
+    bus.Placement.Base = V(0, 0, mm(z0))
+    add_props(bus, material="Estructura Al/Ti", mass_override_kg=params["Bus_mass_eff_kg"])
+    return {"Bus": bus}
+
+def make_TPS(params):
+    # Disco de protección térmica frontal (RCC + espuma) en el plano z_top
+    R = params["TPS_diam_m"]/2.0
+    t = params["TPS_thickness_m"]
+    z_top = params["z_top"]
+    tps = App.ActiveDocument.addObject("Part::Feature", "TPS")
+    tps.Shape = Part.makeCylinder(mm(R), mm(t))
+    tps.Placement.Base = V(0, 0, mm(z_top))
+    add_props(tps, material="C/C facesheets + foam core", density_kg_m3=154)
+    ensure_str_prop(tps, "Stackup", "C/C skins + foam + Al/Ti interfaces", "FEM", "Apilado TPS")
+    return {"TPS": tps}
+
+def make_truss(params):
+    # Dos anillos toroidales y celosía de puntales Ti-6Al-4V
+    R_bus = params["Bus_diam_m"]/2.0
+    z_base = params["z_base"]
+    z_top = params["z_top"]
+    # Colocamos el truss cerca del tercio superior del bus
+    z_center = z_base + params["Bus_height_m"] - 0.30
+    ring_t = 0.02
+    R1 = R_bus * 0.90
+    R2 = R_bus * 0.95
+    z1 = z_center - 0.10
+    z2 = z_center + 0.02
+
+    grp = App.ActiveDocument.addObject("App::DocumentObjectGroup", "Truss")
+    ring_bot = ring_torus(R1, ring_t, z_m=z1, name="Truss_Ring_Bot")
+    ring_top = ring_torus(R2, ring_t, z_m=z2, name="Truss_Ring_Top")
+    grp.addObject(ring_bot); grp.addObject(ring_top)
+
+    # Puntales: 8 verticales y 8 diagonales en cuñas alternas
+    n = 8
+    r_strut = 0.008  # 8 mm
+    for i in range(n):
+        ang = 2*math.pi*i/n
+        p1 = V(R1*math.cos(ang), R1*math.sin(ang), z1)
+        p2 = V(R2*math.cos(ang), R2*math.sin(ang), z2)
+        s = cylinder_between(p1, p2, r_strut, name=f"Strut_V_{i+1}")
+        grp.addObject(s)
+    for i in range(n):
+        ang1 = 2*math.pi*i/n
+        ang2 = 2*math.pi*((i+1)%n)/n
+        p1 = V(R1*math.cos(ang1), R1*math.sin(ang1), z1)
+        p2 = V(R2*math.cos(ang2), R2*math.sin(ang2), z2)
+        s = cylinder_between(p1, p2, r_strut, name=f"Strut_D_{i+1}")
+        grp.addObject(s)
+
+    add_props(ring_bot); add_props(ring_top)
+    ensure_str_prop(grp, "Material", "Ti-6Al-4V struts + toroidal rings", "MassProps")
+    ensure_float_prop(grp, "Mass_kg", 42.0, "MassProps", "Masa truss aprox [kg]")
+    return {"Truss_Group": grp, "Truss_Ring_Bot": ring_bot, "Truss_Ring_Top": ring_top}
+
+def make_radiators(params):
+    size = 1.0   # 1 m x 1 m
+    t = 0.02     # 20 mm
+    z = params["z_top"] - 0.4
+    R = params["Bus_diam_m"]/2.0
+    grp = App.ActiveDocument.addObject("App::DocumentObjectGroup", "Radiators")
+    rads = []
+    for i in range(4):
+        ang = i * math.pi/2.0
+        x = (R + 0.10) * math.cos(ang)
+        y = (R + 0.10) * math.sin(ang)
+        r = App.ActiveDocument.addObject("Part::Feature", f"Radiator_{i+1}")
+        r.Shape = Part.makeBox(mm(size), mm(size), mm(t))
+        r.Placement.Base = V(mm(x - size/2.0), mm(y - size/2.0), mm(z))
+        add_props(r, material="Ti radiador", density_kg_m3=4430)
+        ensure_str_prop(r, "Emissivity", "0.80", "Thermal", "Emisividad efectiva")
+        grp.addObject(r); rads.append(r)
+    return {"Radiators_Group": grp, "Radiators": rads}
+
+def make_thrusters(params):
+    # 12 MR‑111C en 3 niveles, desfase alterno
+    levels_z = [params["z_base"]+0.4, params["z_base"]+1.6, params["z_base"]+2.8]
+    ring_r = params["Bus_diam_m"]/2.0 * 0.95
+    thr_r = 0.175/2.0  # dentro de rango Ø0.15–0.20 m
+    thr_L = 0.425      # dentro de rango 0.35–0.50 m
+    grp = App.ActiveDocument.addObject("App::DocumentObjectGroup", "RCS")
+    ensure_str_prop(grp, "PropulsionSpecs",
+                    "12× MR-111C (4.4 N c/u; total 52.8 N); sistema ~55 kg; blow-down N₂H₄",
+                    group="Info", tip="Especificaciones RCS")
+    thrusters = []
+    for lvl, z in enumerate(levels_z, start=1):
+        for k in range(4):
+            ang = k*math.pi/2.0 + (lvl%2)*math.pi/4.0
+            x = ring_r*math.cos(ang); y = ring_r*math.sin(ang)
+            t = App.ActiveDocument.addObject("Part::Feature", f"Thruster_L{lvl}_{k+1}")
+            t.Shape = Part.makeCylinder(mm(thr_r), mm(thr_L))
+            t.Placement.Base = V(mm(x), mm(y), mm(z))
+            t.Placement.Rotation = App.Rotation(App.Vector(-math.sin(ang), math.cos(ang), 0), 90)
+            add_props(t, material="MR-111C (4.4 N)", density_kg_m3=8000)
+            ensure_notes(t, "Propulsor hidracina monopropelente; L3Harris®")
+            ensure_str_prop(t, "MountInterface", "Brida Ø220 mm; 6× M8 Ti-6Al-4V", "Interface", "Interfaz mecánica")
+            grp.addObject(t); thrusters.append(t)
+    return {"RCS_Group": grp, "Thrusters": thrusters}
+
+def make_propellant_tank(params):
+    # Masa y densidad dadas -> volumen y longitud con Ø 0.50 m
+    m_prop = 82.77
+    rho = 1000.0
+    V_m3 = m_prop / rho
+    r = 0.25
+    L = V_m3 / (math.pi * r*r)
+    z0 = params["z_base"] + params["Bus_height_m"]/2.0 - L/2.0
+    tank = App.ActiveDocument.addObject("Part::Feature", "Tank_Hydrazine")
+    tank.Shape = Part.makeCylinder(mm(r), mm(L))
+    tank.Placement.Base = V(0, 0, mm(z0))
+    add_props(tank, material="Ti-6Al-4V liner compatible", density_kg_m3=4420)
+    ensure_float_prop(tank, "PropellantMass_kg", m_prop, "Propellant", "Masa propelente [kg]")
+    ensure_float_prop(tank, "PropellantDensity_kg_m3", rho, "Propellant", "Densidad propelente [kg/m^3]")
+    return {"Tank": tank}
+
+def make_avionics_and_RW(params):
+    # Aviónica (cubo 0.10 m) y 3 ruedas de reacción ortogonales
+    grp = App.ActiveDocument.addObject("App::DocumentObjectGroup", "Avionics_RW")
+    # Aviónica
+    a = 0.10
+    z0 = params["z_base"] + 0.50
+    av = App.ActiveDocument.addObject("Part::Feature", "Avionics_Core")
+    av.Shape = Part.makeBox(mm(a), mm(a), mm(a))
+    av.Placement.Base = V(mm(-a/2.0), mm(-a/2.0), mm(z0))
+    add_props(av, material="Al honeycomb + PCB", density_kg_m3=1800)
+    ensure_str_prop(av, "Sensors", "IMU, giróscopo, star tracker, magnetómetro", "Controls")
+    ensure_str_prop(av, "Cables", "Blindados 3–4 m", "Controls")
+    ensure_str_prop(av, "Bearings", "Polyimide + lubricante fluorosintético", "Controls")
+    ensure_float_prop(av, "MaxElectronicsTemp_C", 100.0, "Thermal", "Límite electrónico [°C]")
+    grp.addObject(av)
+
+    # Ruedas de reacción (discos)
+    rw_specs = [
+        ("RW_X", V(0.20, 0, params["z_base"]+1.20), 0.12, 0.05),
+        ("RW_Y", V(0, 0.20, params["z_base"]+1.40), 0.12, 0.05),
+        ("RW_Z", V(0, 0, params["z_base"]+1.00), 0.12, 0.05),
+    ]
+    for name, pos_m, R, t in rw_specs:
+        rw = App.ActiveDocument.addObject("Part::Feature", name)
+        rw.Shape = Part.makeCylinder(mm(R), mm(t))
+        rw.Placement.Base = mmV(pos_m)
+        add_props(rw, material="Acero rotor", density_kg_m3=7850)
+        ensure_str_prop(rw, "AxisHint", name[-1], "Controls", "Eje de giro")
+        grp.addObject(rw)
+
+    return {"Avionics_RW_Group": grp, "Avionics": av}
+
+# =========================
+# Macro principal
+# =========================
+
+def SolarParkerProbe_Complex_FEM():
+    doc = App.ActiveDocument
+    if doc is None:
+        doc = App.newDocument("ParkerSolarProbe_Complex_FEM")
+
+    params = {
+        "Bus_diam_m": 1.00,
+        "Bus_height_m": 3.00,
+        "Bus_mass_eff_kg": 560.0,
+        "TPS_diam_m": 2.30,
+        "TPS_thickness_m": 0.1143,
+        "Truss_height_m": 0.60,
+        "Truss_mass_kg": 42.0,
+        "z_base": 0.0,
+        "z_top": 3.00
+    }
+
+    out = {}
+    out.update(make_bus(params))
+    out.update(make_TPS(params))
+    out.update(make_truss(params))
+    out.update(make_radiators(params))
+    out.update(make_thrusters(params))
+    out.update(make_propellant_tank(params))
+    out.update(make_avionics_and_RW(params))
+
+    root = App.ActiveDocument.addObject("App::DocumentObjectGroup", "ParkerSolarProbe")
+    # Añadir objetos y grupos al root
+    for key, val in out.items():
+        if hasattr(val, "TypeId"):
+            root.addObject(val)
+    # En caso de dicts con múltiples objetos (como make_radiators/make_thrusters),
+    # añadimos explícitamente los grupos principales:
+    for k in ["Truss_Group", "Radiators_Group", "RCS_Group", "Avionics_RW_Group"]:
+        if k in out:
+            root.addObject(out[k])
+    for k in ["Bus", "TPS", "Tank", "Avionics"]:
+        if k in out:
+            root.addObject(out[k])
+
+    # Metadatos de misión y FEM
+    ensure_str_prop(root, "MissionNotes",
+                    "Modelo FEM acoplado: TPS, bus, truss Ti-6Al-4V, radiadores, MR-111C, tanque N₂H₄, aviónica y RW",
+                    group="Info", tip="Notas de misión")
+    ensure_str_prop(root, "Shield_Stackup",
+                    "C/C facesheets + foam + Al/Ti structure + Ti-6Al-4V struts",
+                    group="FEM", tip="Apilado de blindaje/estructura")
+    ensure_float_prop(root, "ThermalGradient_K_per_m", 1.18e4, "FEM", "Gradiente térmico [K/m]")
+    ensure_float_prop(root, "CTE_in_plane_min_per_K", 0.5e-6, "FEM", "CTE in-plane min [1/K]")
+    ensure_float_prop(root, "CTE_in_plane_max_per_K", 1.5e-6, "FEM", "CTE in-plane max [1/K]")
+    ensure_float_prop(root, "HC_facesheet_core_min_W_m2K", 10.0, "FEM", "h_c min [W/m^2K]")
+    ensure_float_prop(root, "HC_facesheet_core_max_W_m2K", 500.0, "FEM", "h_c max [W/m^2K]")
+    ensure_str_prop(root, "Mesh_Facesheet_elems", "3–6 elems a través del espesor", "FEM")
+    ensure_str_prop(root, "Mesh_Core_elems", "6–12 elems a través del espesor", "FEM")
+    ensure_bool_prop(root, "RadiatorsEnabled", True, "FEM", "Estudio con radiadores")
+    ensure_str_prop(root, "ThrusterInterface", "Brida Ø220 mm; 6× M8 Ti-6Al-4V", "Interface")
+    ensure_str_prop(root, "AttitudeControl", "Reaction wheels + thruster scheduling", "Controls")
+    ensure_str_prop(root, "Ops_Multibody", "EVA 1.5–2.5 m; payload 15 kg; vacío (sin convección)", "Operaciones")
+    ensure_str_prop(root, "MMAD", "Blindaje local tipo Whipple; pruebas y verificación", "Info", "Micrometeoroides y desechos")
+
+    App.ActiveDocument.recompute()
+    try:
+        Gui.ActiveDocument.ActiveView.fitAll()
+    except Exception:
+        pass
+
+    return out
+
+# Autorrun
+if __name__ == "__main__":
+    SolarParkerProbe_Complex_FEM()
+
+
+        

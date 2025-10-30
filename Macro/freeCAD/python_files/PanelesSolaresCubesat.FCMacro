@@ -1,0 +1,461 @@
+# -*- coding: utf-8 -*-
+# Macro: Parametric Satellite (CubeSat/Cylindrical), printable FDM, single manifold fusion
+# Author: Víctor & Copilot
+# FreeCAD API: Part workbench
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+import math
+
+DOC_NAME = "Parametric_Satellite"
+
+def ensure_document(name):
+    doc = App.ActiveDocument
+    if doc is None or doc.Name != name:
+        try:
+            doc = App.newDocument(name)
+        except Exception:
+            doc = App.ActiveDocument
+    return doc
+
+class Params:
+    # Global mode
+    mode = "cubesat"  # "cubesat" or "cylindrical"
+
+    # Bus (CubeSat)
+    cubesat_size = 100.0       # mm outer
+    wall_thickness = 3.0       # mm
+    bus_chamfer = 2.0          # mm on edges
+    bus_fillet = 1.0           # mm small fillet for print friendliness
+
+    # Bus (Cylindrical)
+    cyl_diameter = 120.0       # mm
+    cyl_length = 160.0         # mm
+    cyl_endcap_thickness = 3.0 # mm flat endcaps added
+
+    # Panels
+    panel_count = 4            # around sides
+    panel_thickness = 2.0      # mm
+    panel_gap = 0.6            # mm small gap to avoid merged faces
+    panel_width_ratio = 0.8    # width vs side
+    panel_height_ratio = 0.9   # height vs side length
+    panels_folded = True       # if True: flush to bus, else: angled with simple hinges
+    panel_angle_deg = 25.0     # if unfolded
+
+    # Antennas
+    add_antenna_whip = True
+    whip_length = 120.0
+    whip_diameter = 2.2
+
+    add_antenna_patch = True
+    patch_size = 22.0
+    patch_thickness = 2.2
+
+    add_antenna_boom = True
+    boom_length = 60.0
+    boom_diameter = 4.0
+    boom_support_thickness = 2.5
+
+    # Tank + nozzle
+    add_tank = True
+    tank_diameter = 40.0
+    tank_length = 70.0
+    tank_offset = 0.0          # axial offset within bus
+    nozzle_length = 12.0
+    nozzle_exit_diameter = 12.0
+    nozzle_throat_diameter = 8.0
+
+    # RTG
+    add_rtg = True
+    rtg_body_diameter = 26.0
+    rtg_body_length = 50.0
+    rtg_fin_count = 8
+    rtg_fin_thickness = 2.0
+    rtg_fin_height = 10.0
+
+    # Mount pads & bosses
+    add_mount_pads = True
+    pad_size = 10.0
+    pad_height = 3.0
+    boss_diameter = 4.0
+    boss_height = 2.0
+
+    # Fillets & chamfers (global helpers)
+    small_fillet = 0.8
+    small_chamfer = 0.8
+
+    # Misc
+    merge_tolerance = 0.01
+
+def make_cubesat_bus(p: Params):
+    s = p.cubesat_size
+    shell = Part.makeBox(s, s, s)
+    # Hollow interior by shrinking and subtracting
+    inner = Part.makeBox(s - 2*p.wall_thickness,
+                         s - 2*p.wall_thickness,
+                         s - 2*p.wall_thickness)
+    inner.translate(App.Vector(p.wall_thickness, p.wall_thickness, p.wall_thickness))
+    bus = shell.cut(inner)
+
+    # Chamfer main edges
+    try:
+        bus = bus.makeChamfer(p.bus_chamfer, [e for e in bus.Edges])
+    except Exception:
+        pass
+    # Small fillet
+    try:
+        bus = bus.makeFillet(p.bus_fillet, [e for e in bus.Edges])
+    except Exception:
+        pass
+    return bus, s
+
+def make_cyl_bus(p: Params):
+    r = p.cyl_diameter/2.0
+    L = p.cyl_length
+    cyl = Part.makeCylinder(r, L)
+    # Endcaps (flat discs fused)
+    cap = Part.makeCylinder(r, p.cyl_endcap_thickness)
+    cap2 = Part.makeCylinder(r, p.cyl_endcap_thickness)
+    cap2.translate(App.Vector(0,0,L - p.cyl_endcap_thickness))
+    bus = cyl.fuse([cap, cap2])
+
+    # Add shallow fillet on rim edges
+    try:
+        bus = bus.makeFillet(Params.small_fillet, [e for e in bus.Edges])
+    except Exception:
+        pass
+    return bus, L, r
+
+def place_panels_on_cubesat(bus, p: Params, s):
+    solids = []
+    side_w = s
+    side_h = s
+    pw = p.panel_width_ratio * side_w
+    ph = p.panel_height_ratio * side_h
+    # Panels on four sides (x±, y±)
+    offsets = [
+        ("+X", App.Vector(s, (side_w - pw)/2.0, (side_h - ph)/2.0), App.Vector(1,0,0)),
+        ("-X", App.Vector(-p.panel_thickness, (side_w - pw)/2.0, (side_h - ph)/2.0), App.Vector(-1,0,0)),
+        ("+Y", App.Vector((side_w - pw)/2.0, s, (side_h - ph)/2.0), App.Vector(0,1,0)),
+        ("-Y", App.Vector((side_w - pw)/2.0, -p.panel_thickness, (side_h - ph)/2.0), App.Vector(0,-1,0)),
+    ]
+    for name, base, normal in offsets[:p.panel_count]:
+        panel = Part.makeBox(pw, ph, p.panel_thickness)
+        # If unfolded, rotate and shift outward
+        if not p.panels_folded:
+            angle = p.panel_angle_deg
+            # hinge axis along panel width edge
+            # To simplify: rotate around local hinge by translating then rotating
+            hinge = base
+            panel.translate(hinge)
+            rot = App.Rotation(App.Vector(normal.x, normal.y, normal.z), angle)
+            panel = panel.rotate(hinge, App.Vector(normal.x, normal.y, normal.z), angle)
+            # Push outward a bit so it doesn't intersect bus
+            push = p.panel_gap + 0.5 * p.panel_thickness
+            out = App.Vector(normal.x*push, normal.y*push, normal.z*push)
+            panel.translate(out)
+        else:
+            # folded: just place flush with a tiny gap
+            gap = p.panel_gap
+            panel.translate(App.Vector(base.x + normal.x*gap,
+                                       base.y + normal.y*gap,
+                                       base.z + normal.z*gap))
+        # small fillet on panel edges for FDM
+        try:
+            panel = panel.makeFillet(Params.small_fillet, [e for e in panel.Edges])
+        except Exception:
+            pass
+        solids.append(panel)
+    return solids
+
+def place_panels_on_cyl(bus, p: Params, L, r):
+    solids = []
+    # Distribute panels around circumference
+    count = min(p.panel_count, 6)
+    angle_step = 360.0 / count
+    pw = p.panel_width_ratio * (2*math.pi*r / count) * 0.85
+    ph = p.panel_height_ratio * L * 0.85
+    for i in range(count):
+        ang = math.radians(i * angle_step)
+        nx = math.cos(ang); ny = math.sin(ang)
+        # Panel as box approximated tangent to cylinder
+        panel = Part.makeBox(pw, ph, p.panel_thickness)
+        # Position: around mid-length, tangent normal
+        cx = (r + p.panel_gap) * nx
+        cy = (r + p.panel_gap) * ny
+        cz = (L - ph)/2.0
+        panel.translate(App.Vector(cx - pw/2.0, cy - ph/2.0, cz))
+        # Rotate panel to face outward normal
+        # We orient local Z along cylinder normal; simple heuristic:
+        axis = App.Vector(0,0,1)
+        rot = App.Rotation(App.Vector(0,0,1), 0)  # no twist along length
+        # Approximate orientation by rotating panel around Z so its thickness points radially
+        panel = panel.rotate(App.Vector(0,0,0), App.Vector(0,0,1), i * angle_step)
+        try:
+            panel = panel.makeFillet(Params.small_fillet, [e for e in panel.Edges])
+        except Exception:
+            pass
+        solids.append(panel)
+    return solids
+
+def add_antenna_whip(base_solid, p: Params, attach_point):
+    whip = Part.makeCylinder(p.whip_diameter/2.0, p.whip_length)
+    whip.translate(attach_point)
+    try:
+        whip = whip.makeFillet(Params.small_fillet, [e for e in whip.Edges])
+    except Exception:
+        pass
+    return whip
+
+def add_antenna_patch(p: Params, attach_point, normal_axis='Z'):
+    size = p.patch_size
+    patch = Part.makeBox(size, size, p.patch_thickness)
+    # Center patch
+    patch.translate(App.Vector(attach_point.x - size/2.0,
+                               attach_point.y - size/2.0,
+                               attach_point.z))
+    try:
+        patch = patch.makeFillet(Params.small_fillet, [e for e in patch.Edges])
+    except Exception:
+        pass
+    return patch
+
+def add_antenna_boom(p: Params, attach_point, direction=App.Vector(1,0,0)):
+    boom = Part.makeCylinder(p.boom_diameter/2.0, p.boom_length)
+    # Orient along direction: rotate around Z by angle
+    angle = math.degrees(math.atan2(direction.y, direction.x))
+    boom = boom.rotate(App.Vector(attach_point.x, attach_point.y, attach_point.z),
+                       App.Vector(0,0,1), angle)
+    boom.translate(attach_point)
+    # Add a small triangular support as a wedge-like prism
+    support = Part.makeBox(p.boom_support_thickness, p.boom_support_thickness, p.boom_length*0.25)
+    support.translate(App.Vector(attach_point.x,
+                                 attach_point.y - p.boom_support_thickness/2.0,
+                                 attach_point.z))
+    try:
+        boom = boom.makeFillet(Params.small_fillet, [e for e in boom.Edges])
+        support = support.makeChamfer(Params.small_chamfer, [e for e in support.Edges])
+    except Exception:
+        pass
+    return boom.fuse(support)
+
+def make_tank_and_nozzle(p: Params, bus_dims, mode):
+    if mode == "cubesat":
+        s = bus_dims
+        center = App.Vector(s/2.0, s/2.0, s/2.0 + p.tank_offset)
+    else:
+        L, r = bus_dims
+        center = App.Vector(r/2.0, r/2.0, L/2.0 + p.tank_offset)
+
+    tank = Part.makeCylinder(p.tank_diameter/2.0, p.tank_length)
+    tank.translate(App.Vector(center.x - p.tank_diameter/2.0,
+                              center.y - p.tank_diameter/2.0,
+                              center.z - p.tank_length/2.0))
+    # Simple nozzle as a truncated cone
+    nozzle = Part.makeCone(p.nozzle_throat_diameter/2.0,
+                           p.nozzle_exit_diameter/2.0,
+                           p.nozzle_length)
+    nozzle.translate(App.Vector(center.x,
+                                center.y,
+                                center.z - p.tank_length/2.0 - p.nozzle_length))
+    try:
+        tank = tank.makeFillet(Params.small_fillet, [e for e in tank.Edges])
+        nozzle = nozzle.makeChamfer(Params.small_chamfer, [e for e in nozzle.Edges])
+    except Exception:
+        pass
+    return tank.fuse(nozzle)
+
+def make_rtg(p: Params, attach_point):
+    body = Part.makeCylinder(p.rtg_body_diameter/2.0, p.rtg_body_length)
+    body.translate(attach_point)
+    fins = []
+    for i in range(p.rtg_fin_count):
+        angle = 360.0 * i / p.rtg_fin_count
+        fin = Part.makeBox(p.rtg_fin_thickness, p.rtg_fin_height, p.rtg_body_length*0.9)
+        # Place around the body with radial orientation approximated by rotation around Z
+        # Offset outward from body radius
+        rad = p.rtg_body_diameter/2.0 + 0.5
+        fx = attach_point.x + rad * math.cos(math.radians(angle))
+        fy = attach_point.y + rad * math.sin(math.radians(angle))
+        fz = attach_point.z + (p.rtg_body_length - p.rtg_body_length*0.9)/2.0
+        fin.translate(App.Vector(fx, fy, fz))
+        fin = fin.rotate(attach_point, App.Vector(0,0,1), angle)
+        fins.append(fin)
+    rtg = body
+    for fin in fins:
+        rtg = rtg.fuse(fin)
+    try:
+        rtg = rtg.makeFillet(Params.small_fillet, [e for e in rtg.Edges])
+    except Exception:
+        pass
+    return rtg
+
+def add_mount_pads_and_bosses_on_cubesat(p: Params, s):
+    solids = []
+    positions = [
+        App.Vector(p.pad_size, p.pad_size, 0),
+        App.Vector(s - p.pad_size*2, p.pad_size, 0),
+        App.Vector(p.pad_size, s - p.pad_size*2, 0),
+        App.Vector(s - p.pad_size*2, s - p.pad_size*2, 0),
+    ]
+    for pos in positions:
+        pad = Part.makeBox(p.pad_size, p.pad_size, p.pad_height)
+        pad.translate(pos)
+        boss = Part.makeCylinder(p.boss_diameter/2.0, p.boss_height)
+        boss.translate(App.Vector(pos.x + p.pad_size/2.0 - p.boss_diameter/2.0,
+                                  pos.y + p.pad_size/2.0 - p.boss_diameter/2.0,
+                                  pos.z + p.pad_height))
+        solids.extend([pad, boss])
+    return solids
+
+def add_mount_pads_and_bosses_on_cyl(p: Params, L, r):
+    solids = []
+    # Four pads around rim of one endcap
+    count = 4
+    ang_step = 360.0 / count
+    z = 0
+    for i in range(count):
+        ang = math.radians(i * ang_step)
+        px = (r - p.pad_size/2.0) * math.cos(ang) - p.pad_size/2.0
+        py = (r - p.pad_size/2.0) * math.sin(ang) - p.pad_size/2.0
+        pad = Part.makeBox(p.pad_size, p.pad_size, p.pad_height)
+        pad.translate(App.Vector(px, py, z))
+        boss = Part.makeCylinder(p.boss_diameter/2.0, p.boss_height)
+        boss.translate(App.Vector(px + p.pad_size/2.0 - p.boss_diameter/2.0,
+                                  py + p.pad_size/2.0 - p.boss_diameter/2.0,
+                                  z + p.pad_height))
+        solids.extend([pad, boss])
+    return solids
+
+def make_solar_panel_with_cells(p, width, height, thickness, nx=6, ny=10):
+    # Marco
+    frame = Part.makeBox(width, height, thickness)
+    cells = []
+    cell_w = width / nx
+    cell_h = height / ny
+    for i in range(nx):
+        for j in range(ny):
+            cell = Part.makeBox(cell_w*0.9, cell_h*0.9, thickness*0.5)
+            cell.translate(App.Vector(i*cell_w + cell_w*0.05,
+                                      j*cell_h + cell_h*0.05,
+                                      thickness))
+            cells.append(cell)
+    panel = frame.fuse(cells)
+    return panel
+
+def make_internal_structure(p, bus_size):
+    solids = []
+    # Vigas en cruz
+    beam1 = Part.makeBox(bus_size, p.wall_thickness, bus_size)
+    beam2 = Part.makeBox(p.wall_thickness, bus_size, bus_size)
+    beam1.translate(App.Vector(0, bus_size/2 - p.wall_thickness/2, 0))
+    beam2.translate(App.Vector(bus_size/2 - p.wall_thickness/2, 0, 0))
+    solids.extend([beam1, beam2])
+    # Bandejas horizontales
+    for z in [bus_size/3, 2*bus_size/3]:
+        tray = Part.makeBox(bus_size, bus_size, p.wall_thickness)
+        tray.translate(App.Vector(0,0,z))
+        solids.append(tray)
+    return solids
+
+
+def build_satellite(p: Params):
+    doc = ensure_document(DOC_NAME)
+
+    # Base bus
+    if p.mode == "cubesat":
+        bus, s = make_cubesat_bus(p)
+        fusion = bus
+        # Panels
+        panels = place_panels_on_cubesat(bus, p, s)
+        # Antennas
+        antennas = []
+        if p.add_antenna_whip:
+            antennas.append(add_antenna_whip(bus, p, App.Vector(s/2.0, s/2.0, s)))  # top center
+        if p.add_antenna_patch:
+            antennas.append(add_antenna_patch(p, App.Vector(s/2.0, s/2.0, 0)))      # bottom center
+        if p.add_antenna_boom:
+            antennas.append(add_antenna_boom(p, App.Vector(0, s/2.0, s/2.0), App.Vector(1,0,0)))
+
+        # Tank & nozzle
+        tanks = [make_tank_and_nozzle(p, s, "cubesat")] if p.add_tank else []
+        # RTG
+        rtgs = [make_rtg(p, App.Vector(s, s/2.0, s/2.0))] if p.add_rtg else []
+        # Mount pads
+        pads = add_mount_pads_and_bosses_on_cubesat(p, s) if p.add_mount_pads else []
+
+        # Fuse all
+        to_fuse = [fusion] + panels + antennas + tanks + rtgs + pads
+        fusion = to_fuse[0]
+        for solid in to_fuse[1:]:
+            try:
+                fusion = fusion.fuse(solid)
+                fusion.removeSplitter()
+            except Exception:
+                fusion = fusion.fuse(solid)
+
+    else:  # cylindrical
+        bus, L, r = make_cyl_bus(p)
+        fusion = bus
+        # Panels
+        panels = place_panels_on_cyl(bus, p, L, r)
+        # Antennas
+        antennas = []
+        if p.add_antenna_whip:
+            antennas.append(add_antenna_whip(bus, p, App.Vector(r, r, L)))  # top rim
+        if p.add_antenna_patch:
+            antennas.append(add_antenna_patch(p, App.Vector(r, r, 0)))
+        if p.add_antenna_boom:
+            antennas.append(add_antenna_boom(p, App.Vector(r*1.05, 0, L/2.0), App.Vector(0,1,0)))
+
+        # Tank & nozzle
+        tanks = [make_tank_and_nozzle(p, (L, r), "cyl")] if p.add_tank else []
+        # RTG
+        rtgs = [make_rtg(p, App.Vector(r*1.1, 0, L*0.6))] if p.add_rtg else []
+        # Mount pads
+        pads = add_mount_pads_and_bosses_on_cyl(p, L, r) if p.add_mount_pads else []
+
+        # Fuse all
+        to_fuse = [fusion] + panels + antennas + tanks + rtgs + pads
+        fusion = to_fuse[0]
+        for solid in to_fuse[1:]:
+            try:
+                fusion = fusion.fuse(solid)
+                fusion.removeSplitter()
+            except Exception:
+                fusion = fusion.fuse(solid)
+
+    # Create final Part object
+    obj = doc.addObject("Part::Feature", "Satellite")
+    obj.Shape = fusion.removeSplitter()
+    # Recenter for convenience
+    bbox = obj.Shape.BoundBox
+    obj.Placement.Base = App.Vector(-bbox.XLength/2.0 - bbox.XMin,
+                                    -bbox.YLength/2.0 - bbox.YMin,
+                                    -bbox.ZLength/2.0 - bbox.ZMin)
+    Gui.ActiveDocument.ActiveView.viewAxonometric()
+    Gui.SendMsgToActiveView("ViewFit")
+    doc.recompute()
+    return obj
+
+# Quick presets
+if __name__ == "__main__":
+    # Example 1: CubeSat compacto
+    # Params.mode = "cubesat"
+    # Params.cubesat_size = 100
+    # Params.panels_folded = True
+    # build_satellite(Params)
+
+    # Example 2: Cilíndrico con paneles desplegados
+    # Params.mode = "cylindrical"
+    # Params.cyl_diameter = 120
+    # Params.cyl_length = 160
+    # Params.panels_folded = False
+    # Params.panel_angle_deg = 25
+    # build_satellite(Params)
+
+    # Default: ejecuta un CubeSat equilibrado
+    Params.mode = "cubesat"
+    Params.panels_folded = True
+    build_satellite(Params)
