@@ -1,0 +1,407 @@
+# -*- coding: utf-8 -*-
+import FreeCAD as App, FreeCADGui as Gui, Part, math
+
+DOC_NAME = "BlenderStyle_Ship_CAD_Complete"
+if App.ActiveDocument is None or App.ActiveDocument.Label != DOC_NAME:
+    App.newDocument(DOC_NAME)
+doc = App.ActiveDocument
+
+P = {
+    # Fuselaje principal (estilo: cono nariz + cilindro medio + cuerpo trasero)
+    "nose_len": 700.0,
+    "nose_base_d": 1100.0,     # base más ancha, acorde al look Blender
+    "nose_cap_d": 600.0,
+    "mid_len": 2200.0,
+    "mid_d": 1800.0,
+    "rear_len": 1600.0,
+    "rear_d": 2200.0,
+    "hull_t": 35.0,
+
+    # Cockpit integrado lateral (blend)
+    "cockpit_w": 980.0,
+    "cockpit_h": 520.0,
+    "cockpit_l": 820.0,
+    "cockpit_x0": 600.0,
+    "cockpit_blend_r": 100.0,
+
+    # Reactor y boquilla (campana amplia estilo Blender)
+    "reactor_d": 1500.0,
+    "reactor_l": 2000.0,
+    "reactor_cx": 3200.0,
+    "nozzle_throat_d": 500.0,
+    "nozzle_exit_d": 1900.0,
+    "nozzle_l": 1800.0,
+    "nozzle_cx": 4200.0,
+    "nozzle_fillet_r": 120.0,
+
+    # Truss estructural radial
+    "truss_n": 10,
+    "truss_tube_w": 160.0,
+    "truss_R_attach": 900.0,
+    "truss_len": 1100.0,
+
+    # Alas (taper + sweep)
+    "wing_root_w": 1200.0,
+    "wing_tip_w": 300.0,
+    "wing_chord": 600.0,
+    "wing_sweep_deg": 25.0,
+
+    # Propulsores laterales
+    "side_thruster_d": 540.0,
+    "side_thruster_l": 1100.0,
+    "side_thruster_x": 2600.0,
+    "side_thruster_y": 1400.0,
+    "side_thruster_z": -140.0,
+
+    # Escudo interno alrededor del reactor
+    "shield_gap": 40.0,
+    "shield_inner_t": 120.0,
+    "shield_extend": 650.0,
+
+    # Bandas estructurales y estrakes
+    "band_w": 140.0,
+    "band_t": 20.0,
+    "bands_n": 5,
+    "strake_w": 90.0,
+    "strake_h": 45.0,
+    "strake_pitch": 420.0,
+
+    # Panelado superficial (grabado)
+    "panel_depth": 4.0,
+    "panel_w": 280.0,
+    "panel_h": 180.0,
+    "panel_pitch_x": 340.0,
+    "panel_pitch_z": 220.0,
+
+    # Rejillas y respiraderos
+    "grille_w": 500.0,
+    "grille_h": 260.0,
+    "grille_t": 12.0,
+
+    # Boosters radiales en la base (como en la imagen)
+    "booster_n": 4,
+    "booster_d": 900.0,
+    "booster_l": 1600.0,
+    "booster_gap": 140.0,
+    "booster_ring_r": 1600.0,
+    "booster_nozzle_d": 600.0,
+    "booster_nozzle_l": 400.0,
+
+    # Tanques y esferas laterales
+    "tank_r": 420.0,
+    "tank_l": 2100.0,
+    "tank_off": 1300.0,
+    "sphere_r": 480.0,
+    "sphere_off": 1700.0,
+
+    # Antena
+    "mast_l": 1100.0,
+    "mast_r": 44.0,
+    "dish_r": 420.0,
+
+    # Tren de aterrizaje
+    "leg_r": 110.0,
+    "leg_l": 850.0,
+    "foot_r": 260.0,
+    "foot_t": 55.0,
+
+    # Fillets generales
+    "hull_fillet_r": 40.0,
+    "wing_fillet_r": 24.0,
+    "band_fillet_r": 16.0,
+
+    # Ensamblado/print
+    "make_unified_solid": False  # True para fusionar todo en un sólido manifold
+}
+
+def rot_to_x():
+    return App.Rotation(App.Vector(0,1,0), 90)
+
+def add_obj(shape, label, color=(0.70,0.70,0.72)):
+    obj = doc.addObject("Part::Feature", label)
+    obj.Shape = shape
+    try:
+        obj.ViewObject.ShapeColor = color
+        obj.ViewObject.DisplayMode = "Shaded"
+    except: pass
+    return obj
+
+def make_cyl_x(d, L, cx=0, cy=0, cz=0):
+    c = Part.makeCylinder(d/2.0, L)
+    c.Placement = App.Placement(App.Vector(cx - L/2.0, cy, cz), rot_to_x())
+    return c
+
+def make_tube_x(d_o, d_i, L, cx=0, cy=0, cz=0):
+    o = Part.makeCylinder(d_o/2.0, L)
+    i = Part.makeCylinder(d_i/2.0, L+0.2)
+    t = o.cut(i)
+    t.Placement = App.Placement(App.Vector(cx - L/2.0, cy, cz), rot_to_x())
+    return t
+
+def make_cone_x(d1, d2, L, cx=0, cy=0, cz=0):
+    c = Part.makeCone(d1/2.0, d2/2.0, L)
+    c.Placement = App.Placement(App.Vector(cx - L/2.0, cy, cz), rot_to_x())
+    return c
+
+def safe_fillet(shape, r):
+    try: return shape.makeFillet(r, shape.Edges)
+    except: return shape
+
+# -------------------------
+# Fuselaje y casco con grosor
+# -------------------------
+nose_cap = Part.makeSphere(P["nose_cap_d"]/2.0)
+nose_cap.Placement = App.Placement(App.Vector(P["nose_cap_d"]/2.0,0,0), App.Rotation())
+
+nose_trans = make_cone_x(P["nose_base_d"], P["nose_cap_d"], P["nose_len"], cx=P["nose_len"]/2.0)
+mid = make_cyl_x(P["mid_d"], P["mid_len"], cx=P["nose_len"])
+rear = make_cyl_x(P["rear_d"], P["rear_len"], cx=P["nose_len"]+P["mid_len"])
+
+fuse_fuselage = nose_cap.fuse(nose_trans).fuse(mid).fuse(rear)
+try:
+    hull_inner = fuse_fuselage.makeOffsetShape(-P["hull_t"], 0.01, join=2, fill=True)
+    hull_shell = fuse_fuselage.cut(hull_inner)
+    hull_shell = safe_fillet(hull_shell, P["hull_fillet_r"])
+    hull_obj = add_obj(hull_shell, "Hull_Shell")
+except:
+    hull_obj = add_obj(fuse_fuselage, "Hull_Shell_Fallback")
+
+# Cockpit integrado (blend)
+cockpit_box = Part.makeBox(P["cockpit_l"], P["cockpit_w"], P["cockpit_h"])
+cockpit_box.Placement = App.Placement(App.Vector(P["cockpit_x0"], -P["cockpit_w"]/2.0, -P["cockpit_h"]/2.0), App.Rotation())
+blend_sphere = Part.makeSphere(P["cockpit_blend_r"])
+blend_sphere.Placement = App.Placement(App.Vector(P["cockpit_x0"] - P["cockpit_blend_r"]/2.0, 0, 0), App.Rotation())
+cockpit_vol = cockpit_box.fuse(blend_sphere)
+try:
+    ck_inner = cockpit_vol.makeOffsetShape(-12.0, 0.01, join=2, fill=True)
+    cockpit_shell = cockpit_vol.cut(ck_inner)
+    cockpit_obj = add_obj(cockpit_shell, "Cockpit_Integrated", color=(0.76,0.76,0.78))
+    hull_cut = hull_obj.Shape.cut(cockpit_vol)
+    hull_obj = add_obj(hull_cut, "Hull_With_Cockpit")
+except:
+    cockpit_obj = add_obj(cockpit_vol, "Cockpit_Integrated_Fallback")
+
+# -------------------------
+# Bandas y estrakes (caracter técnico)
+# -------------------------
+bands = []
+x_b0 = P["nose_len"]*0.25
+pitch = (P["mid_len"] + P["rear_len"] - 2*P["band_w"]) / max(1, P["bands_n"])
+for i in range(P["bands_n"]):
+    cx = x_b0 + i*pitch + P["band_w"]/2.0
+    b = Part.makeCylinder(P["mid_d"]/2.0 + P["band_t"], P["band_w"])
+    b.Placement = App.Placement(App.Vector(cx - P["band_w"]/2.0,0,0), rot_to_x())
+    bands.append(b)
+band_union = bands[0]
+for b in bands[1:]: band_union = band_union.fuse(b)
+band_union = safe_fillet(band_union, P["band_fillet_r"])
+bands_obj = add_obj(band_union, "Structural_Bands", color=(0.64,0.64,0.66))
+
+# Estrakes longitudinales (4)
+strakes = []
+for ang in [0,90,180,270]:
+    y = (P["mid_d"]/2.0 + 40) * math.cos(math.radians(ang))
+    z = (P["mid_d"]/2.0 + 40) * math.sin(math.radians(ang))
+    x0 = P["nose_len"]
+    x1 = P["nose_len"] + P["mid_len"] + P["rear_len"] - 200
+    x = x0
+    while x < x1:
+        s = Part.makeBox(P["strake_pitch"], P["strake_w"], P["strake_h"])
+        s.Placement = App.Placement(App.Vector(x, y - P["strake_w"]/2.0, z - P["strake_h"]/2.0), App.Rotation())
+        strakes.append(s)
+        x += P["strake_pitch"]
+strake_union = strakes[0]
+for s in strakes[1:]: strake_union = strake_union.fuse(s)
+strakes_obj = add_obj(strake_union, "Strakes", color=(0.62,0.62,0.66))
+
+# -------------------------
+# Reactor + boquilla (campana + garganta)
+# -------------------------
+reactor_core = make_cyl_x(P["reactor_d"], P["reactor_l"], cx=P["reactor_cx"])
+reactor_obj = add_obj(reactor_core, "Reactor_Core", color=(0.68,0.68,0.70))
+
+nozzle_cone = make_cone_x(P["nozzle_throat_d"], P["nozzle_exit_d"], P["nozzle_l"], cx=P["nozzle_cx"])
+nozzle_cone = safe_fillet(nozzle_cone, P["nozzle_fillet_r"])
+nozzle_obj = add_obj(nozzle_cone, "Main_Nozzle", color=(0.74,0.74,0.76))
+
+# Garganta (pequeña sección cilíndrica)
+throat = make_cyl_x(P["nozzle_throat_d"], 240.0, cx=P["nozzle_cx"] - P["nozzle_l"]/2.0 - 120.0)
+nozzle_full = throat.fuse(nozzle_obj.Shape)
+nozzle_obj = add_obj(nozzle_full, "Main_Nozzle_With_Throat")
+
+# Escudo interno alrededor del reactor
+inner_r = P["reactor_d"]/2.0 + P["shield_gap"]
+outer_r = inner_r + P["shield_inner_t"]
+len_mod = P["reactor_l"] + P["shield_extend"]
+shield_inner = Part.makeCylinder(inner_r, len_mod)
+shield_outer = Part.makeCylinder(outer_r, len_mod)
+shield_tube = shield_outer.cut(shield_inner)
+shield_tube.Placement = App.Placement(App.Vector(P["reactor_cx"] - len_mod/2.0, 0, 0), rot_to_x())
+shield_obj = add_obj(shield_tube, "Shield_Internal", color=(0.60,0.60,0.62))
+
+# Truss radial
+truss_parts = []
+for k in range(P["truss_n"]):
+    ang = k*(360.0/P["truss_n"])
+    y = P["truss_R_attach"]*math.cos(math.radians(ang))
+    z = P["truss_R_attach"]*math.sin(math.radians(ang))
+    beam = Part.makeBox(P["truss_len"], P["truss_tube_w"], P["truss_tube_w"])
+    beam.Placement = App.Placement(App.Vector(P["reactor_cx"] - P["truss_len"]/2.0, y - P["truss_tube_w"]/2.0, z - P["truss_tube_w"]/2.0), App.Rotation())
+    truss_parts.append(beam)
+truss_shape = truss_parts[0]
+for t in truss_parts[1:]: truss_shape = truss_shape.fuse(t)
+truss_obj = add_obj(truss_shape, "Truss_HeavyArmor", color=(0.58,0.58,0.60))
+
+# -------------------------
+# Boosters radiales en la base
+# -------------------------
+boosters = []
+base_x = P["nose_len"] + P["mid_len"] + P["rear_len"] - P["booster_l"]*0.6
+for k in range(P["booster_n"]):
+    ang = k*(360.0/P["booster_n"])
+    y = P["booster_ring_r"]*math.cos(math.radians(ang))
+    z = P["booster_ring_r"]*math.sin(math.radians(ang))
+    b = make_cyl_x(P["booster_d"], P["booster_l"], cx=base_x, cy=y, cz=z)
+    bn = make_cone_x(P["booster_nozzle_d"], P["booster_nozzle_d"]*0.5, P["booster_nozzle_l"],
+                     cx=base_x + P["booster_l"]/2.0 + P["booster_nozzle_l"]/2.0, cy=y, cz=z)
+    boosters.append(b.fuse(bn))
+booster_union = boosters[0]
+for b in boosters[1:]: booster_union = booster_union.fuse(b)
+boosters_obj = add_obj(booster_union, "Base_Boosters", color=(0.66,0.66,0.68))
+
+# -------------------------
+# Alas trapezoidales con sweep (derecha/izquierda)
+# -------------------------
+def make_angular_wing(x0, side=1, label="Wing", color=(0.70,0.70,0.72)):
+    root = P["wing_root_w"]; tip = P["wing_tip_w"]; chord = P["wing_chord"]; sweep = P["wing_sweep_deg"]
+    x_le = x0; x_te = x0 + chord; z = 0
+    p1 = App.Vector(x_le, 0, z + root/2.0)
+    p2 = App.Vector(x_te, 0, z + tip/2.0)
+    p3 = App.Vector(x_te, 0, z - tip/2.0)
+    p4 = App.Vector(x_le, 0, z - root/2.0)
+    wire = Part.makePolygon([p1,p2,p3,p4,p1]); face = Part.Face(wire)
+    wing_solid = face.extrude(App.Vector(0, side*(root - tip), 0))
+    wing_solid.Placement = App.Placement(App.Vector(0,0,0),
+        App.Rotation(App.Vector(1,0,0), -sweep if side>0 else sweep))
+    wing_solid = safe_fillet(wing_solid, P["wing_fillet_r"])
+    return add_obj(wing_solid, label, color=color)
+
+wing_r = make_angular_wing(P["nose_len"] + 850, side=1, label="Wing_Right", color=(0.72,0.72,0.74))
+wing_l = make_angular_wing(P["nose_len"] + 850, side=-1, label="Wing_Left", color=(0.72,0.72,0.74))
+
+# Propulsores laterales tubulares
+thr_r = make_tube_x(P["side_thruster_d"]+40, P["side_thruster_d"]-60, P["side_thruster_l"],
+                    cx=P["side_thruster_x"], cy=P["side_thruster_y"], cz=P["side_thruster_z"])
+thr_l = make_tube_x(P["side_thruster_d"]+40, P["side_thruster_d"]-60, P["side_thruster_l"],
+                    cx=P["side_thruster_x"], cy=-P["side_thruster_y"], cz=P["side_thruster_z"])
+thr_obj = add_obj(thr_r.fuse(thr_l), "Side_Thrusters", color=(0.68,0.68,0.70))
+
+# -------------------------
+# Rejillas y respiraderos (laterales)
+# -------------------------
+grilles = []
+for side in [1, -1]:
+    g = Part.makeBox(P["grille_w"], P["grille_t"], P["grille_h"])
+    gy = side*(P["mid_d"]/2.0 + 80.0)
+    gx = P["nose_len"] + P["mid_len"]*0.4
+    g.Placement = App.Placement(App.Vector(gx, gy - P["grille_t"]/2.0, -P["grille_h"]/2.0), App.Rotation())
+    grilles.append(g)
+grille_union = grilles[0].fuse(grilles[1])
+grille_obj = add_obj(grille_union, "Side_Grilles", color=(0.55,0.55,0.57))
+
+# -------------------------
+# Tanques y esferas laterales
+# -------------------------
+tankL = make_cyl_x(P["tank_r"]*2.0, P["tank_l"], cx=P["nose_len"] + 1050, cy=P["tank_off"], cz=0)
+tankR = make_cyl_x(P["tank_r"]*2.0, P["tank_l"], cx=P["nose_len"] + 1050, cy=-P["tank_off"], cz=0)
+sphereL = Part.makeSphere(P["sphere_r"]); sphereL.Placement = App.Placement(App.Vector(P["nose_len"] + 2500, P["sphere_off"], 0), App.Rotation())
+sphereR = Part.makeSphere(P["sphere_r"]); sphereR.Placement = App.Placement(App.Vector(P["nose_len"] + 2500, -P["sphere_off"], 0), App.Rotation())
+tanks_obj = add_obj(tankL.fuse(tankR).fuse(sphereL).fuse(sphereR), "Tanks_Assembly", color=(0.64,0.64,0.66))
+
+# -------------------------
+# Antena (mástil + plato)
+# -------------------------
+mast = make_cyl_x(P["mast_r"]*2.0, P["mast_l"], cx=P["nose_len"] + P["mid_len"], cy=P["mid_d"]/2.0 + 120.0, cz=0)
+dish = Part.makeSphere(P["dish_r"])
+try: dish.Placement.Scale = App.Vector(1,1,0.30)
+except: pass
+dish.Placement = App.Placement(App.Vector(P["nose_len"] + P["mid_len"] + P["mast_l"], P["mid_d"]/2.0 + 120.0, 0), App.Rotation())
+antenna_obj = add_obj(mast.fuse(dish), "Antenna", color=(0.74,0.74,0.76))
+
+# -------------------------
+# Tren de aterrizaje radial (4 patas)
+# -------------------------
+legs = []
+for angle in [0,90,180,270]:
+    leg = Part.makeCylinder(P["leg_r"], P["leg_l"])
+    lx = (P["mid_d"]/2.0 - 80.0)*math.cos(math.radians(angle))
+    lz = (P["mid_d"]/2.0 - 80.0)*math.sin(math.radians(angle))
+    leg.Placement = App.Placement(App.Vector(P["nose_len"] - 150.0, lx, lz), rot_to_x())
+    foot = Part.makeCylinder(P["foot_r"], P["foot_t"])
+    foot.Placement = App.Placement(App.Vector(P["nose_len"] - 150.0 + P["leg_l"], lx, lz), rot_to_x())
+    legs.append(leg.fuse(foot))
+landing_obj = add_obj(legs[0].fuse(legs[1]).fuse(legs[2]).fuse(legs[3]), "Landing_Gear", color=(0.62,0.62,0.64))
+
+# -------------------------
+# Panelado superficial (grabado) sobre el casco
+# -------------------------
+def add_paneling_on_hull(hull_shape):
+    panels = []
+    x0 = P["nose_len"]*0.35
+    x1 = P["nose_len"] + P["mid_len"] + P["rear_len"] - P["panel_pitch_x"]
+    x = x0
+    while x < x1:
+        z0 = -P["mid_d"]/2.0 + P["panel_pitch_z"]
+        z1 = P["mid_d"]/2.0 - P["panel_pitch_z"]
+        z = z0
+        while z < z1:
+            b = Part.makeBox(P["panel_w"], P["panel_depth"], P["panel_h"])
+            b.Placement = App.Placement(App.Vector(x, -P["panel_depth"]/2.0, z - P["panel_h"]/2.0), App.Rotation())
+            panels.append(b)
+            z += P["panel_pitch_z"]
+        x += P["panel_pitch_x"]
+    if not panels: return hull_shape
+    u = panels[0]
+    for p in panels[1:]: u = u.fuse(p)
+    try: return hull_shape.cut(u)
+    except: return hull_shape
+
+try:
+    hull_panelized = add_paneling_on_hull(hull_obj.Shape)
+    hull_obj = add_obj(hull_panelized, "Hull_Panelized", color=(0.70,0.70,0.72))
+except: pass
+
+# -------------------------
+# Ensamblaje
+# -------------------------
+grp = doc.addObject("App::Part", "BlenderStyle_Ship")
+parts = [
+    hull_obj, cockpit_obj, bands_obj, strakes_obj,
+    reactor_obj, shield_obj, nozzle_obj, truss_obj,
+    boosters_obj, wing_r, wing_l, thr_obj,
+    grille_obj, tanks_obj, antenna_obj, landing_obj
+]
+for o in parts:
+    try: grp.addObject(o)
+    except: pass
+
+doc.recompute()
+
+# -------------------------
+# Opción: sólido unificado (para export/print)
+# -------------------------
+if P["make_unified_solid"]:
+    try:
+        union = parts[0].Shape
+        for o in parts[1:]:
+            union = union.fuse(o.Shape)
+        unified_obj = add_obj(union, "Ship_Unified_Solid", color=(0.73,0.73,0.75))
+        grp.addObject(unified_obj)
+    except: pass
+
+try:
+    Gui.ActiveDocument.ActiveView.viewAxonometric()
+    Gui.SendMsgToActiveView("ViewFit")
+except: pass
+
+print("Macro 'BlenderStyle_Ship_CAD_Complete' lista en '{}'.".format(doc.Label))
