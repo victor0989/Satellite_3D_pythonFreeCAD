@@ -1,0 +1,120 @@
+# -*- coding:utf-8 -*-
+import FreeCAD as App, FreeCADGui as Gui, Part
+
+doc_name="CubeSat_Propulsor_SolarIntegrated"
+doc=App.ActiveDocument if App.ActiveDocument and App.ActiveDocument.Label==doc_name else App.newDocument(doc_name)
+doc=App.ActiveDocument
+
+# -----------------------------
+# Parámetros CubeSat
+# -----------------------------
+u_size = 100.0   # mm
+num_units = 3
+wall_thickness = 2.0
+rail_width = 4.0
+frame_clearance = 2.0
+
+# Celdas solares
+cell_rows, cell_cols = 6, 6
+cell_gap = 1.0
+cell_thk = 0.8
+cell_margin = 4.0
+
+# Adaptador propulsor
+adapter_plate_t = 4.0
+propulsor_gap = 10.0
+
+# -----------------------------
+# Utilidades
+# -----------------------------
+def translate(s,x=0,y=0,z=0): s.translate(App.Vector(x,y,z)); return s
+def fuse_all(parts):
+    out=parts[0]
+    for p in parts[1:]: out=out.fuse(p)
+    return out
+
+# -----------------------------
+# Bus CubeSat con celdas solares
+# -----------------------------
+def make_core():
+    h=num_units*u_size
+    core=Part.makeBox(u_size-2*frame_clearance,u_size-2*frame_clearance,h)
+    translate(core,frame_clearance,frame_clearance,0)
+    return core
+
+def make_solar_cells():
+    cells=[]
+    cell_w=(u_size-2*cell_margin-(cell_cols-1)*cell_gap)/cell_cols
+    cell_h=(num_units*u_size-2*cell_margin-(cell_rows-1)*cell_gap)/cell_rows
+    # Caras X+ y X-
+    for side in [0,1]:
+        x_face=(u_size-cell_thk) if side==1 else -cell_thk
+        for r in range(cell_rows):
+            for c in range(cell_cols):
+                y=cell_margin+c*(cell_w+cell_gap)
+                z=cell_margin+r*(cell_h+cell_gap)
+                cell=Part.makeBox(cell_thk,cell_w,cell_h)
+                translate(cell,x_face,y,z)
+                cells.append(cell)
+    # Caras Y+ y Y-
+    for side in [0,1]:
+        y_face=(u_size-cell_thk) if side==1 else -cell_thk
+        for r in range(cell_rows):
+            for c in range(cell_cols):
+                x=cell_margin+c*(cell_w+cell_gap)
+                z=cell_margin+r*(cell_h+cell_gap)
+                cell=Part.makeBox(cell_w,cell_thk,cell_h)
+                translate(cell,x,y_face,z)
+                cells.append(cell)
+    # Cara superior Z+
+    z_face=num_units*u_size
+    for r in range(cell_rows):
+        for c in range(cell_cols):
+            x=cell_margin+c*(cell_w+cell_gap)
+            y=cell_margin+r*(cell_w+cell_gap)
+            cell=Part.makeBox(cell_w,cell_w,cell_thk)
+            translate(cell,x,y,z_face)
+            cells.append(cell)
+    return cells
+
+def build_cubesat_solar():
+    core=make_core()
+    cells=make_solar_cells()
+    sat=fuse_all([core]+cells)
+    return sat
+
+# -----------------------------
+# Propulsor CassiniUltra (simplificado)
+# -----------------------------
+X_AXIS=App.Vector(1,0,0);Y_AXIS=App.Vector(0,1,0)
+rot_to_x=lambda:App.Rotation(Y_AXIS,90)
+def cyl_x(d,L,cx=0): s=Part.makeCylinder(d/2.0,L); s.Placement=App.Placement(App.Vector(cx-L/2.0,0,0),rot_to_x()); return s
+def cone_x(d1,d2,L,cx=0): s=Part.makeCone(d1/2.0,d2/2.0,L); s.Placement=App.Placement(App.Vector(cx-L/2.0,0,0),rot_to_x()); return s
+
+def build_propulsor():
+    tank=cyl_x(6000,11000,0)
+    nozzle=cone_x(5600,900,4600,-11000/2-4600/2)
+    return tank.fuse(nozzle)
+
+# -----------------------------
+# Ensamblaje
+# -----------------------------
+def assemble():
+    sat=build_cubesat_solar()
+    sat_obj=doc.addObject("Part::Feature","CubeSat_Solar"); sat_obj.Shape=sat
+    prop=build_propulsor()
+    # Alinear propulsor en X- del CubeSat
+    bb=prop.BoundBox
+    dx=-adapter_plate_t-propulsor_gap-bb.XMin
+    dy=u_size/2-(bb.YMin+(bb.YMax-bb.YMin)/2)
+    dz=(num_units*u_size)/2-(bb.ZMin+(bb.ZMax-bb.ZMin)/2)
+    translate(prop,dx,dy,dz)
+    prop_obj=doc.addObject("Part::Feature","Propulsor"); prop_obj.Shape=prop
+    # Colorear
+    sat_obj.ViewObject.ShapeColor=(0.1,0.1,0.3) # azul oscuro solar
+    prop_obj.ViewObject.ShapeColor=(0.6,0.65,0.7)
+    return sat_obj,prop_obj
+
+assemble()
+doc.recompute()
+Gui.SendMsgToActiveView("ViewFit")

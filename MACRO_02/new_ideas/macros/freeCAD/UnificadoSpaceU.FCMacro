@@ -1,0 +1,365 @@
+# -*- coding: utf-8 -*-
+import FreeCAD as App, FreeCADGui as Gui, Part, math
+
+# ------------------------------------------------------------
+# Documento y parámetros
+# ------------------------------------------------------------
+DOC_NAME = "Destiny_HeavyArmor_CAD_Complete"
+if App.ActiveDocument is None or App.ActiveDocument.Label != DOC_NAME:
+    App.newDocument(DOC_NAME)
+doc = App.ActiveDocument
+
+P = {
+    # Fuselaje principal
+    "nose_len": 650.0,
+    "nose_base_d": 800.0,
+    "nose_cap_d": 600.0,
+    "mid_len": 1400.0,
+    "mid_d": 1200.0,
+    "rear_len": 1300.0,
+    "rear_d": 1600.0,
+    "hull_t": 30.0,
+    # Cockpit integrado
+    "cockpit_w": 950.0,
+    "cockpit_h": 500.0,
+    "cockpit_l": 750.0,
+    "cockpit_x0": 550.0,
+    "cockpit_blend_r": 80.0,
+    # Reactor y boquilla
+    "reactor_d": 1200.0,
+    "reactor_l": 2000.0,
+    "reactor_cx": 3000.0,
+    "nozzle_throat_d": 450.0,
+    "nozzle_exit_d": 1700.0,
+    "nozzle_l": 1700.0,
+    "nozzle_cx": 3700.0,
+    "nozzle_fillet_r": 80.0,
+    # Truss estructural radial
+    "truss_n": 8,
+    "truss_tube_w": 160.0,
+    "truss_R_attach": 800.0,
+    "truss_len": 1000.0,
+    # Alas
+    "wing_root_w": 800.0,
+    "wing_tip_w": 200.0,
+    "wing_chord": 450.0,
+    "wing_thickness": 40.0,
+    "wing_sweep_deg": 22.0,
+    # Propulsores laterales
+    "side_thruster_d": 500.0,
+    "side_thruster_l": 1000.0,
+    "side_thruster_x": 2500.0,
+    "side_thruster_y": 1300.0,
+    "side_thruster_z": -100.0,
+    # Escudo interno alrededor del reactor
+    "shield_gap": 30.0,
+    "shield_inner_t": 100.0,
+    "shield_extend": 500.0,
+    # Tanques y esferas (laterales)
+    "tank_r": 400.0,
+    "tank_l": 2000.0,
+    "tank_off": 1200.0,
+    "sphere_r": 450.0,
+    "sphere_off": 1600.0,
+    # Antena y plato
+    "mast_l": 1000.0,
+    "mast_r": 40.0,
+    "dish_r": 400.0,
+    # Tren de aterrizaje
+    "leg_r": 100.0,
+    "leg_l": 800.0,
+    "foot_r": 250.0,
+    "foot_t": 50.0,
+    # Panelado superficial
+    "panel_depth": 4.0,
+    "panel_w": 300.0,
+    "panel_h": 180.0,
+    "panel_pitch_x": 380.0,
+    "panel_pitch_z": 220.0,
+    # Fillets generales
+    "hull_fillet_r": 30.0,
+    "wing_fillet_r": 20.0,
+}
+
+# ------------------------------------------------------------
+# Utilidades
+# ------------------------------------------------------------
+def rot_to_x():
+    # Rota los sólidos para que el eje de longitud sea +X (estilo CAD técnico)
+    return App.Rotation(App.Vector(0,1,0), 90)
+
+def add_obj(shape, label):
+    obj = doc.addObject("Part::Feature", label)
+    obj.Shape = shape
+    try:
+        obj.ViewObject.ShapeColor = (0.70, 0.70, 0.72)  # gris metálico
+        obj.ViewObject.DisplayMode = "Shaded"
+    except:
+        pass
+    return obj
+
+def make_cyl_x(d, L, cx=0, cy=0, cz=0, label="CylX"):
+    c = Part.makeCylinder(d/2.0, L)
+    c.Placement = App.Placement(App.Vector(cx - L/2.0, cy, cz), rot_to_x())
+    return add_obj(c, label)
+
+def make_tube_x(d_o, d_i, L, cx=0, cy=0, cz=0, label="TubeX"):
+    o = Part.makeCylinder(d_o/2.0, L)
+    i = Part.makeCylinder(d_i/2.0, L + 0.2)
+    t = o.cut(i)
+    t.Placement = App.Placement(App.Vector(cx - L/2.0, cy, cz), rot_to_x())
+    return add_obj(t, label)
+
+def make_cone_x(d1, d2, L, cx=0, cy=0, cz=0, label="ConeX"):
+    c = Part.makeCone(d1/2.0, d2/2.0, L)
+    c.Placement = App.Placement(App.Vector(cx - L/2.0, cy, cz), rot_to_x())
+    return add_obj(c, label)
+
+def make_box(w, d, h, cx=0, cy=0, cz=0, label="Box"):
+    b = Part.makeBox(w, d, h)
+    b.Placement = App.Placement(App.Vector(cx - w/2.0, cy - d/2.0, cz - h/2.0), App.Rotation())
+    return add_obj(b, label)
+
+def safe_fillet(shape, radius):
+    try:
+        return shape.makeFillet(radius, shape.Edges)
+    except:
+        return shape
+
+# ------------------------------------------------------------
+# Fuselaje con casco (offset) y cockpit integrado
+# ------------------------------------------------------------
+nose_cap = Part.makeSphere(P["nose_cap_d"]/2.0)
+nose_cap.Placement = App.Placement(App.Vector(P["nose_cap_d"]/2.0, 0, 0), App.Rotation())
+
+nose_trans = Part.makeCone(P["nose_base_d"]/2.0, P["nose_cap_d"]/2.0, P["nose_len"] - P["nose_cap_d"]/2.0)
+nose_trans.Placement = App.Placement(App.Vector(P["nose_len"]/2.0, 0, 0), rot_to_x())
+
+mid = Part.makeCylinder(P["mid_d"]/2.0, P["mid_len"])
+mid.Placement = App.Placement(App.Vector(P["nose_len"], 0, 0), rot_to_x())
+
+rear = Part.makeCylinder(P["rear_d"]/2.0, P["rear_len"])
+rear.Placement = App.Placement(App.Vector(P["nose_len"] + P["mid_len"], 0, 0), rot_to_x())
+
+fuse_fuselage = nose_cap.fuse(nose_trans).fuse(mid).fuse(rear)
+
+# Casco hueco con grosor
+try:
+    hull_inner = fuse_fuselage.makeOffsetShape(-P["hull_t"], 0.01, join=2, fill=True)
+    hull_shell = fuse_fuselage.cut(hull_inner)
+    # Fillet suave del casco para estética metálica
+    hull_fillet = safe_fillet(hull_shell, P["hull_fillet_r"])
+    hull_obj = add_obj(hull_fillet, "Hull_Shell")
+except:
+    hull_obj = add_obj(fuse_fuselage, "Hull_Shell_Fallback")
+
+# Cockpit integrado con blend
+cockpit_box = Part.makeBox(P["cockpit_l"], P["cockpit_w"], P["cockpit_h"])
+cockpit_box.Placement = App.Placement(App.Vector(P["cockpit_x0"], -P["cockpit_w"]/2.0, -P["cockpit_h"]/2.0), App.Rotation())
+blend_sphere = Part.makeSphere(P["cockpit_blend_r"])
+blend_sphere.Placement = App.Placement(App.Vector(P["cockpit_x0"] - P["cockpit_blend_r"]/2.0, 0, 0), App.Rotation())
+cockpit_vol = cockpit_box.fuse(blend_sphere)
+
+try:
+    ck_inner = cockpit_vol.makeOffsetShape(-12.0, 0.01, join=2, fill=True)
+    cockpit_shell = cockpit_vol.cut(ck_inner)
+    cockpit_obj = add_obj(cockpit_shell, "Cockpit_Integrated")
+except:
+    cockpit_obj = add_obj(cockpit_vol, "Cockpit_Integrated_Fallback")
+
+# Integra el cockpit recortando el casco
+try:
+    hull_with_cockpit = hull_obj.Shape.cut(cockpit_vol)
+    hull_obj_cut = add_obj(hull_with_cockpit, "Hull_With_Cockpit")
+except:
+    hull_obj_cut = hull_obj
+
+# ------------------------------------------------------------
+# Reactor y boquilla extendida con fillet
+# ------------------------------------------------------------
+reactor_core = Part.makeCylinder(P["reactor_d"]/2.0, P["reactor_l"])
+reactor_core.Placement = App.Placement(App.Vector(P["reactor_cx"] - P["reactor_l"]/2.0, 0, 0), rot_to_x())
+reactor_obj = add_obj(reactor_core, "Reactor_Core")
+
+nozzle = Part.makeCone(P["nozzle_throat_d"]/2.0, P["nozzle_exit_d"]/2.0, P["nozzle_l"])
+nozzle.Placement = App.Placement(App.Vector(P["nozzle_cx"] - P["nozzle_l"]/2.0, 0, 0), rot_to_x())
+# Fillet en la base de la boquilla (suaviza transición)
+nozzle_fillet = safe_fillet(nozzle, P["nozzle_fillet_r"])
+nozzle_obj = add_obj(nozzle_fillet, "Nozzle_Extended")
+
+# ------------------------------------------------------------
+# Truss radial de refuerzo alrededor del reactor
+# ------------------------------------------------------------
+truss_parts = []
+for k in range(P["truss_n"]):
+    ang = k * (360.0 / P["truss_n"])
+    y = P["truss_R_attach"] * math.cos(math.radians(ang))
+    z = P["truss_R_attach"] * math.sin(math.radians(ang))
+    beam = Part.makeBox(P["truss_len"], P["truss_tube_w"], P["truss_tube_w"])
+    beam.Placement = App.Placement(App.Vector(P["reactor_cx"] - P["truss_len"]/2.0, y - P["truss_tube_w"]/2.0, z - P["truss_tube_w"]/2.0), App.Rotation())
+    truss_parts.append(beam)
+
+truss_shape = truss_parts[0]
+for t in truss_parts[1:]:
+    truss_shape = truss_shape.fuse(t)
+truss_obj = add_obj(truss_shape, "Truss_HeavyArmor")
+
+# ------------------------------------------------------------
+# Alas trapezoidales con sweep y fillet
+# ------------------------------------------------------------
+def make_angular_wing(x0, side=1, label="Wing"):
+    root = P["wing_root_w"]
+    tip = P["wing_tip_w"]
+    chord = P["wing_chord"]
+    sweep = P["wing_sweep_deg"]
+    x_le = x0
+    x_te = x0 + chord
+    z = 0
+    p1 = App.Vector(x_le, 0, z + root/2.0)
+    p2 = App.Vector(x_te, 0, z + tip/2.0)
+    p3 = App.Vector(x_te, 0, z - tip/2.0)
+    p4 = App.Vector(x_le, 0, z - root/2.0)
+    wire = Part.makePolygon([p1, p2, p3, p4, p1])
+    face = Part.Face(wire)
+    wing_solid = face.extrude(App.Vector(0, side*(root - tip), 0))
+    wing_solid.Placement = App.Placement(App.Vector(0, 0, 0),
+                                         App.Rotation(App.Vector(1, 0, 0), -sweep if side > 0 else sweep))
+    # Fillet suave en bordes del ala
+    wing_solid_f = safe_fillet(wing_solid, P["wing_fillet_r"])
+    return add_obj(wing_solid_f, label)
+
+wing_r = make_angular_wing(P["nose_len"] + 750, side=1, label="Wing_Right_Angular")
+wing_l = make_angular_wing(P["nose_len"] + 750, side=-1, label="Wing_Left_Angular")
+
+# ------------------------------------------------------------
+# Propulsores laterales tubulares
+# ------------------------------------------------------------
+thr_r = make_tube_x(P["side_thruster_d"] + 40, P["side_thruster_d"] - 50, P["side_thruster_l"],
+                    cx=P["side_thruster_x"], cy=P["side_thruster_y"], cz=P["side_thruster_z"],
+                    label="SideThruster_Right")
+thr_l = make_tube_x(P["side_thruster_d"] + 40, P["side_thruster_d"] - 50, P["side_thruster_l"],
+                    cx=P["side_thruster_x"], cy=-P["side_thruster_y"], cz=P["side_thruster_z"],
+                    label="SideThruster_Left")
+
+# ------------------------------------------------------------
+# Escudo interno (tubo) alrededor del reactor
+# ------------------------------------------------------------
+inner_r = P["reactor_d"]/2.0 + P["shield_gap"]
+outer_r = inner_r + P["shield_inner_t"]
+len_mod = P["reactor_l"] + P["shield_extend"]
+shield_inner = Part.makeCylinder(inner_r, len_mod)
+shield_outer = Part.makeCylinder(outer_r, len_mod)
+shield_tube = shield_outer.cut(shield_inner)
+shield_tube.Placement = App.Placement(App.Vector(P["reactor_cx"] - len_mod/2.0, 0, 0), rot_to_x())
+shield_obj = add_obj(shield_tube, "Shield_Internal")
+
+# ------------------------------------------------------------
+# Tanques cilíndricos y esferas laterales (simetría)
+# ------------------------------------------------------------
+tankL = Part.makeCylinder(P["tank_r"], P["tank_l"])
+tankL.Placement = App.Placement(App.Vector(P["nose_len"] + 1000 - P["tank_l"]/2.0, P["tank_off"], 0), rot_to_x())
+
+tankR = Part.makeCylinder(P["tank_r"], P["tank_l"])
+tankR.Placement = App.Placement(App.Vector(P["nose_len"] + 1000 - P["tank_l"]/2.0, -P["tank_off"], 0), rot_to_x())
+
+sphereL = Part.makeSphere(P["sphere_r"])
+sphereL.Placement = App.Placement(App.Vector(P["nose_len"] + 2500, P["sphere_off"], 0), App.Rotation())
+
+sphereR = Part.makeSphere(P["sphere_r"])
+sphereR.Placement = App.Placement(App.Vector(P["nose_len"] + 2500, -P["sphere_off"], 0), App.Rotation())
+
+tanks = tankL.fuse(tankR).fuse(sphereL).fuse(sphereR)
+tanks_obj = add_obj(tanks, "Tanks_Complete")
+
+# ------------------------------------------------------------
+# Antena con mástil y plato
+# ------------------------------------------------------------
+mast = Part.makeCylinder(P["mast_r"], P["mast_l"])
+mast.Placement = App.Placement(App.Vector(P["nose_len"] + P["mid_len"], P["mid_d"]/2.0 + 100.0, 0), rot_to_x())
+
+dish = Part.makeSphere(P["dish_r"])
+# Aplana (escala en Z) el plato para un look de antena parabólica
+try:
+    dish.Placement.Scale = App.Vector(1, 1, 0.30)
+except:
+    pass
+dish.Placement = App.Placement(App.Vector(P["nose_len"] + P["mid_len"] + P["mast_l"], P["mid_d"]/2.0 + 100.0, 0), App.Rotation())
+
+antenna = mast.fuse(dish)
+antenna_obj = add_obj(antenna, "Antenna")
+
+# ------------------------------------------------------------
+# Tren de aterrizaje radial (4 patas + pies)
+# ------------------------------------------------------------
+legs = []
+for angle in [0, 90, 180, 270]:
+    leg = Part.makeCylinder(P["leg_r"], P["leg_l"])
+    lx = (P["mid_d"]/2.0) * math.cos(math.radians(angle))
+    lz = (P["mid_d"]/2.0) * math.sin(math.radians(angle))
+    leg.Placement = App.Placement(App.Vector(0, lx, lz), App.Rotation())  # eje en Z por defecto
+    foot = Part.makeCylinder(P["foot_r"], P["foot_t"])
+    foot.Placement = App.Placement(App.Vector(-P["foot_t"], lx, lz), App.Rotation())
+    legs.append(leg.fuse(foot))
+landing_full = legs[0].fuse(legs[1]).fuse(legs[2]).fuse(legs[3])
+landing_obj = add_obj(landing_full, "Landing_Gear")
+
+# ------------------------------------------------------------
+# Panelado superficial (grabado) sobre el casco
+# ------------------------------------------------------------
+def add_paneling_on_hull(hull_shape):
+    # Genera una malla de cajas finas y las sustrae para crear líneas de panel
+    panels = []
+    x0 = P["nose_len"] * 0.25
+    x1 = P["nose_len"] + P["mid_len"] + P["rear_len"] - P["panel_pitch_x"]
+    x = x0
+    while x < x1:
+        z0 = -P["mid_d"]/2.0 + P["panel_pitch_z"]
+        z1 = P["mid_d"]/2.0 - P["panel_pitch_z"]
+        z = z0
+        while z < z1:
+            b = Part.makeBox(P["panel_w"], P["panel_depth"], P["panel_h"])
+            b.Placement = App.Placement(App.Vector(x, -P["panel_depth"]/2.0, z - P["panel_h"]/2.0), App.Rotation())
+            panels.append(b)
+            z += P["panel_pitch_z"]
+        x += P["panel_pitch_x"]
+    if not panels:
+        return hull_shape
+    panel_union = panels[0]
+    for p in panels[1:]:
+        panel_union = panel_union.fuse(p)
+    try:
+        return hull_shape.cut(panel_union)
+    except:
+        return hull_shape
+
+try:
+    hull_panelized = add_paneling_on_hull(hull_obj_cut.Shape)
+    hull_obj_cut = add_obj(hull_panelized, "Hull_With_Panels")
+except:
+    pass
+
+# ------------------------------------------------------------
+# Ensamblaje final y visualización
+# ------------------------------------------------------------
+grp = doc.addObject("App::Part", "Destiny_HeavyArmor_Ship")
+parts = [
+    hull_obj_cut, cockpit_obj, reactor_obj, nozzle_obj,
+    truss_obj, wing_r, wing_l, thr_r, thr_l,
+    shield_obj, tanks_obj, antenna_obj, landing_obj
+]
+for o in parts:
+    try:
+        grp.addObject(o)
+    except:
+        pass
+
+doc.recompute()
+
+# Vista y apariencia general
+try:
+    Gui.ActiveDocument.ActiveView.viewAxonometric()
+    Gui.SendMsgToActiveView("ViewFit")
+except:
+    pass
+
+print("Macro 'Destiny Heavy Armor CAD Complete' lista en '{}'.".format(doc.Label))

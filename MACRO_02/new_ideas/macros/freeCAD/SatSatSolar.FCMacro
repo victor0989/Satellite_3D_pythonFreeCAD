@@ -1,0 +1,226 @@
+# -*-coding:utf-8-*-
+# Macro: StarSatIndustrialSci-FiCADMetal-Ready
+# Autor: Copilot para Víctor (Madrid)
+
+import FreeCAD as App,FreeCADGui as Gui,Part,math,random
+doc=App.newDocument("StarSat_Industrial")
+P=dict(mode="hybrid",wall_thk=2.0,chamfer_val=0.8,
+       bus_w=60.0,bus_d=60.0,bus_h=80.0,
+       prow_len=80.0,stern_len=60.0,deck_thk=3.0,hull_scale=1.15,
+       fin_span=110.0,fin_t=3.0,
+       engine_count=2,engine_len=80.0,engine_r=14.0,engine_ring_t=3.0,
+       panel_len=160.0,panel_w=50.0,panel_t=2.5,panel_segments=3,panel_deploy_deg=25.0,
+       dish_diameter=55.0,dish_depth=10.0,dish_thickness=1.5,boom_len=40.0,
+       array_cell_w=10.0,array_cell_h=10.0,
+       reactor_d=40.0,reactor_l=80.0,nozzle_throat_d=12.0,nozzle_exit_d=40.0,nozzle_l=50.0,
+       sphere_r=20.0,sphere_gap=50.0,
+       cut_plane_x=40.0,cut_plane_th=2.0,
+       col_hull=(0.75,0.76,0.78),col_panel=(0.06,0.08,0.20),
+       col_metal=(0.70,0.70,0.72),col_glow=(0.15,0.4,1.0),col_detail=(0.5,0.5,0.5))
+random.seed(42)
+
+def add_obj(shape,name,color=None,group=None):
+    obj=doc.addObject("Part::Feature",name);obj.Shape=shape
+    if color:
+        try:obj.ViewObject.ShapeColor=color
+        except:pass
+    if group:group.addObject(obj)
+    return obj
+
+def T(shape,v):
+    m=App.Matrix();m.move(App.Vector(*v));return shape.transformGeometry(m)
+
+def R(shape,axis,ang,center=(0,0,0)):
+    return shape.rotate(App.Vector(*center),App.Vector(*axis),ang)
+
+def centered_box(w,d,h):
+    return T(Part.makeBox(w,d,h),(-w/2,-d/2,-h/2))
+
+def cyl(h,r,axis='Z',center=False):
+    c=Part.makeCylinder(r,h)
+    if axis=='X': c=R(c,(0,1,0),90)
+    if axis=='Y': c=R(c,(1,0,0),90)
+    if center:
+        if axis=='Z': c=T(c,(0,0,-h/2))
+        if axis=='X': c=T(c,(-h/2,0,0))
+        if axis=='Y': c=T(c,(0,-h/2,0))
+    return c
+
+def cone(r1,r2,h,axis='Z',center=False):
+    c=Part.makeCone(r1,r2,h)
+    if axis=='X': c=R(c,(0,1,0),90)
+    if axis=='Y': c=R(c,(1,0,0),90)
+    if center:
+        if axis=='Z': c=T(c,(0,0,-h/2))
+        if axis=='X': c=T(c,(-h/2,0,0))
+        if axis=='Y': c=T(c,(0,-h/2,0))
+    return c
+
+def ring(h,Do,Di,axis='Z',center=False):
+    outer=cyl(h,Do/2.0,axis=axis,center=center);inner=cyl(h+0.1,Di/2.0,axis=axis,center=center);return outer.cut(inner)
+
+def chamfer(shape,val):
+    try:
+        edges=[e for e in shape.Edges];return shape.makeChamfer(val,edges)
+    except:
+        return shape
+
+# Grupos
+g_root=doc.addObject("App::DocumentObjectGroup","StarSat")
+g_bus=doc.addObject("App::DocumentObjectGroup","Bus_and_Systems");g_root.addObject(g_bus)
+g_ship=doc.addObject("App::DocumentObjectGroup","ShipShell");g_root.addObject(g_ship)
+g_pan=doc.addObject("App::DocumentObjectGroup","SolarArrays");g_root.addObject(g_pan)
+g_acpl=doc.addObject("App::DocumentObjectGroup","Acoplamientos");g_root.addObject(g_acpl)
+g_weap=doc.addObject("App::DocumentObjectGroup","Details");g_root.addObject(g_weap)
+
+# Bus
+def make_bus():
+    outer=centered_box(P['bus_w'],P['bus_d'],P['bus_h'])
+    inner=centered_box(P['bus_w']-2*P['wall_thk'],P['bus_d']-2*P['wall_thk'],P['bus_h']-2*P['wall_thk'])
+    bus=chamfer(outer.cut(inner),P['chamfer_val'])
+    return add_obj(bus,"Bus",P['col_hull'],g_bus)
+
+# Deck/casco
+def make_deck():
+    hull_len=P['bus_w']*P['hull_scale']+P['prow_len']+P['stern_len']
+    hull_w=P['bus_d']*P['hull_scale']
+    deck=centered_box(hull_len,hull_w,P['deck_thk'])
+    return add_obj(chamfer(deck,P['chamfer_val']),"Deck",P['col_hull'],g_ship)
+
+bus_obj=make_bus()
+deck_obj=make_deck()
+
+# Nariz y cola estilizadas (opcional, compactas)
+prow=centered_box(P['prow_len'],P['bus_d']*0.9,P['deck_thk'])
+prow=T(prow,(+P['bus_w']/2.0+P['prow_len']/2.0,0,0))
+stern=centered_box(P['stern_len'],P['bus_d']*0.95,P['deck_thk'])
+stern=T(stern,(-P['bus_w']/2.0-P['stern_len']/2.0,0,0))
+add_obj(prow,"Prow",P['col_hull'],g_ship)
+add_obj(stern,"Stern",P['col_hull'],g_ship)
+
+# Reactor y boquilla (alineados al eje X)
+reactor=cyl(P["reactor_l"],P["reactor_d"]/2.0,axis='X',center=True)
+reactor=T(reactor,(P["bus_w"]/2.0+P["reactor_l"]/2.0,0,0))
+add_obj(reactor,"Reactor",P["col_metal"],g_ship)
+
+nozzle=cone(P["nozzle_throat_d"]/2.0,P["nozzle_exit_d"]/2.0,P["nozzle_l"],axis='X',center=True)
+nozzle=T(nozzle,(P["bus_w"]/2.0+P["reactor_l"]+P["nozzle_l"]/2.0,0,0))
+add_obj(nozzle,"Main_Nozzle",P["col_metal"],g_ship)
+
+# Motores laterales compactos
+for i in range(P['engine_count']):
+    offset=((-1)**i)*(P['bus_d']/2.0+12.0)
+    engine=cyl(P['engine_len'],P['engine_r'],axis='X',center=True)
+    engine=T(engine,(0,offset,0))
+    add_obj(engine,f"Engine_{i}",P['col_metal'],g_ship)
+    ering=ring(P['engine_ring_t'],P['engine_r']*2.4,P['engine_r']*2.0,axis='X',center=True)
+    ering=T(ering,(P['engine_len']/2.0,offset,0))
+    add_obj(ering,f"EngineRing_{i}",P['col_metal'],g_ship)
+
+# Arrays solares (marco + mosaico de celdas)
+def make_array(side):
+    frame=centered_box(P["panel_len"],P["panel_w"],P["panel_t"])
+    frame=T(frame,(0,side*(P["bus_d"]/2.0+P["boom_len"]),0))
+    fobj=add_obj(frame,f"SolarArray_Frame_{'L' if side<0 else 'R'}",P["col_panel"],g_pan)
+    nx=int(P["panel_len"]/P["array_cell_w"]);nz=int(P["panel_w"]/P["array_cell_h"])
+    for ix in range(nx):
+        for iz in range(nz):
+            cell=centered_box(P["array_cell_w"]*0.9,P["array_cell_h"]*0.9,P["panel_t"])
+            cell=T(cell,(ix*P["array_cell_w"]-P["panel_len"]/2.0+P["array_cell_w"]/2.0,
+                         side*(P["bus_d"]/2.0+P["boom_len"]),
+                         iz*P["array_cell_h"]-P["panel_w"]/2.0+P["array_cell_h"]/2.0))
+            add_obj(cell,f"Cell_{ix}_{iz}_{'L' if side<0 else 'R'}",P["col_detail"],g_pan)
+    return fobj
+
+arrL=make_array(-1)
+arrR=make_array(1)
+
+# Torre y antena
+tower_h=90.0;tower_w=8.0;tower_pitch=12.0
+segments=[];n=int(tower_h/tower_pitch)+1
+tower_base_x=P["bus_w"]/2.0+6.0;tower_side_y=P["bus_d"]/2.0+10.0
+for i in range(n):
+    z=-tower_h/2.0+i*tower_pitch
+    seg=centered_box(tower_w,tower_w,tower_pitch*0.9)
+    seg=T(seg,(tower_base_x,tower_side_y,z));segments.append(seg)
+tower_shape=segments[0]
+for s in segments[1:]:tower_shape=tower_shape.fuse(s)
+add_obj(tower_shape,"Comm_Tower",P["col_metal"],g_weap)
+
+boom=cyl(P["boom_len"],2.0,axis='X',center=True)
+boom=T(boom,(P["bus_w"]/2.0+P["boom_len"]/2.0,tower_side_y,0))
+add_obj(boom,"Antenna_Boom",P["col_metal"],g_weap)
+
+dish=cone(0,P["dish_diameter"]/2.0,P["dish_depth"],axis='X',center=True)
+dish=T(dish,(P["bus_w"]/2.0+P["boom_len"],tower_side_y,0))
+add_obj(dish,"Dish",P["col_metal"],g_weap)
+
+# Tanques esféricos con bandas
+sphere_L=Part.makeSphere(P["sphere_r"]);sphere_R=Part.makeSphere(P["sphere_r"])
+sphere_L.translate(App.Vector(-P["bus_w"]/2.0-P["sphere_r"],-P["sphere_gap"]/2.0,0))
+sphere_R.translate(App.Vector(-P["bus_w"]/2.0-P["sphere_r"], P["sphere_gap"]/2.0,0))
+add_obj(sphere_L,"Tank_L",P["col_metal"],g_bus)
+add_obj(sphere_R,"Tank_R",P["col_metal"],g_bus)
+
+def sphere_band(cx,cy,cz,r,w,th,axis='X'):
+    ring_out=cyl(w,r,axis=axis,center=True)
+    ring_in=cyl(w+0.1,r-th,axis=axis,center=True)
+    band=ring_out.cut(ring_in);band.translate(App.Vector(cx,cy,cz));return band
+
+band_w=6.0;band_th=1.5
+tcL=App.Vector(-P["bus_w"]/2.0-P["sphere_r"],-P["sphere_gap"]/2.0,0)
+tcR=App.Vector(-P["bus_w"]/2.0-P["sphere_r"], P["sphere_gap"]/2.0,0)
+add_obj(sphere_band(tcL.x,tcL.y,tcL.z,P["sphere_r"],band_w,band_th,'X'),"TankBandL_X",P["col_metal"],g_bus)
+add_obj(sphere_band(tcL.x,tcL.y,tcL.z,P["sphere_r"],band_w,band_th,'Y'),"TankBandL_Y",P["col_metal"],g_bus)
+add_obj(sphere_band(tcR.x,tcR.y,tcR.z,P["sphere_r"],band_w,band_th,'X'),"TankBandR_X",P["col_metal"],g_bus)
+add_obj(sphere_band(tcR.x,tcR.y,tcR.z,P["sphere_r"],band_w,band_th,'Y'),"TankBandR_Y",P["col_metal"],g_bus)
+
+# Corte técnico
+cut_plane=centered_box(P["cut_plane_th"],P["bus_d"]*1.4,P["bus_h"]*1.4)
+cut_plane=T(cut_plane,(P["cut_plane_x"]-P["cut_plane_th"]/2.0,0,0))
+cut_obj=add_obj(cut_plane,"Cut_Plane",P["col_detail"],g_ship)
+try:
+    bus_cut=bus_obj.Shape.cut(cut_plane)
+    deck_cut=deck_obj.Shape.cut(cut_plane)
+    bus_obj=add_obj(bus_cut,"Bus_Cutaway",P["col_hull"],g_bus)
+    deck_obj=add_obj(deck_cut,"Deck_Cutaway",P["col_hull"],g_ship)
+except:pass
+
+# Interior mínimo: dos asientos y consola
+seat_w,seat_d,seat_h=18.0,20.0,22.0
+seat_L=centered_box(seat_w,seat_d,seat_h);seat_R=centered_box(seat_w,seat_d,seat_h)
+seat_x=P["cut_plane_x"]-10.0
+seat_L=T(seat_L,(seat_x,-P["bus_d"]/4.0,-P["bus_h"]/6.0))
+seat_R=T(seat_R,(seat_x, P["bus_d"]/4.0,-P["bus_h"]/6.0))
+console=centered_box(26.0,18.0,8.0);console=T(console,(seat_x+14.0,0.0,-P["bus_h"]/6.0))
+add_obj(seat_L,"Seat_L",P["col_detail"],g_bus)
+add_obj(seat_R,"Seat_R",P["col_detail"],g_bus)
+add_obj(console,"Console",P["col_detail"],g_bus)
+
+# Despliegue opcional de paneles (rotación simple)
+try:
+    for obj in g_pan.Group:
+        if obj.Label.startswith("SolarArray_Frame_"):
+            side=-1 if obj.Label.endswith("_L") else 1
+            pivot=App.Vector(0,side*(P["bus_d"]/2.0),0)
+            s=obj.Shape; s.translate(-pivot)
+            s.rotate(App.Vector(0,0,0),App.Vector(0,0,1),side*P["panel_deploy_deg"])
+            s.translate(pivot); obj.Shape=s
+except:pass
+
+# Unificación opcional para exportación
+MAKE_UNIFIED_SOLID=True
+if MAKE_UNIFIED_SOLID:
+    fuse_order=[]
+    for grp in [g_bus,g_ship,g_pan,g_weap]:
+        for o in grp.Group:
+            if o.Label!="Cut_Plane":
+                fuse_order.append(o.Shape)
+    if fuse_order:
+        final=fuse_order[0]
+        for sh in fuse_order[1:]:
+            try: final=final.fuse(sh)
+            except: pass
+        add_obj(final,"Unified_StarSat",P["col_metal"],g_root)
+
+doc.recompute()

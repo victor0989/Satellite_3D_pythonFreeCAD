@@ -1,0 +1,332 @@
+# -*- coding:utf-8 -*-
+import FreeCAD as App, FreeCADGui as Gui
+import Part
+
+doc_name = "CubeSat_Propulsor_Assembly"
+doc = App.ActiveDocument if App.ActiveDocument and App.ActiveDocument.Label==doc_name else App.newDocument(doc_name)
+doc = App.ActiveDocument
+
+# =========================================================
+# Parámetros globales (mm)
+# =========================================================
+# CubeSat (3U, estilo de la imagen)
+u_size = 100.0           # 1U ~ 100 mm (estándar nominal)
+num_units = 3            # 3U => altura ~ 300 mm
+wall_thickness = 2.0     # grosor de paneles/cubiertas
+rail_width = 4.0         # ancho riel esquina
+beam_height = 3.0        # altura travesaños por nivel
+frame_clearance = 2.0    # separación interna respecto a estructura
+
+side_panel_rows = 4      # filas por cara
+side_panel_cols = 3      # columnas por módulo
+panel_gap = 0.8          # separación celdas laterales
+
+# Alas solares (cada ala 1×12)
+wing_cells = 12
+wing_cell_len = 10.0
+wing_cell_wid = 20.0
+wing_panel_thk = 1.5
+hinge_block = (8.0, 8.0, 8.0)  # lx, ly, lz
+hinge_offset = 2.0
+
+# Base
+base_size = (125.0, 125.0, 10.0)
+base_rail_w = 6.0
+bracket_size = (12.0, 12.0, 8.0)
+bracket_bolt_d = 4.0
+
+# Interfaz de ensamblaje frente al propulsor
+# Se colocará una "placa adaptadora" en la cara X- del CubeSat (posterior),
+# que acopla con el propulsor (eje X). Ajusta distancias si lo necesitas.
+adapter_plate_w = u_size
+adapter_plate_h = u_size
+adapter_plate_t = 4.0
+adapter_hole_d = 6.0
+adapter_hole_margin = 12.0
+
+# Offset de propulsor respecto a la cara posterior del CubeSat
+propulsor_gap = 10.0  # separación mínima para no interferir con estructura
+
+# =========================================================
+# Utilidades geométricas
+# =========================================================
+X_AXIS = App.Vector(1,0,0); Y_AXIS = App.Vector(0,1,0); Z_AXIS = App.Vector(0,0,1)
+rot_to_x = lambda : App.Rotation(Y_AXIS,90)
+
+def add_obj(shape, name):
+    o = doc.addObject("Part::Feature", name); o.Shape = shape; return o
+
+def translate(solid, x=0, y=0, z=0):
+    solid.translate(App.Vector(x, y, z)); return solid
+
+def fuse_all(parts):
+    out = parts[0]
+    for p in parts[1:]: out = out.fuse(p)
+    return out
+
+def level_z(level_idx): return level_idx * u_size
+
+# =========================================================
+# CubeSat 3U (sólido estructural + alas + base)
+# =========================================================
+def make_vertical_rails():
+    h = num_units * u_size
+    rails = []
+    for x in [0, u_size - rail_width]:
+        for y in [0, u_size - rail_width]:
+            r = Part.makeBox(rail_width, rail_width, h)
+            rails.append(r)
+    return rails
+
+def make_perimeter_beams():
+    beams = []
+    for lvl in range(num_units + 1):
+        z = level_z(lvl) - beam_height/2 if lvl < num_units else level_z(num_units) - beam_height/2
+        b1 = Part.makeBox(u_size, beam_height, beam_height); translate(b1, 0, 0, z)
+        b2 = Part.makeBox(u_size, beam_height, beam_height); translate(b2, 0, u_size - beam_height, z)
+        b3 = Part.makeBox(beam_height, u_size, beam_height); translate(b3, 0, 0, z)
+        b4 = Part.makeBox(beam_height, u_size, beam_height); translate(b4, u_size - beam_height, 0, z)
+        beams += [b1, b2, b3, b4]
+    return beams
+
+def make_module_side_panels():
+    panels = []
+    usable_x = u_size - 2*rail_width
+    usable_y = u_size - 2*rail_width
+    cell_w_x = (usable_y - (side_panel_cols - 1)*panel_gap) / side_panel_cols
+    cell_h = (u_size - (side_panel_rows - 1)*panel_gap) / side_panel_rows
+    for lvl in range(num_units):
+        z0 = level_z(lvl)
+        x_face = u_size - wall_thickness
+        for r in range(side_panel_rows):
+            for c in range(side_panel_cols):
+                y = rail_width + c*(cell_w_x + panel_gap)
+                z = z0 + r*(cell_h + panel_gap)
+                cell = Part.makeBox(wall_thickness, cell_w_x, cell_h)
+                translate(cell, x_face, y, z)
+                panels.append(cell)
+        y_face = u_size - wall_thickness
+        cell_w_y = (usable_x - (side_panel_cols - 1)*panel_gap) / side_panel_cols
+        for r in range(side_panel_rows):
+            for c in range(side_panel_cols):
+                x = rail_width + c*(cell_w_y + panel_gap)
+                z = z0 + r*(cell_h + panel_gap)
+                cell = Part.makeBox(cell_w_y, wall_thickness, cell_h)
+                translate(cell, x, y_face, z)
+                panels.append(cell)
+    return panels
+
+def make_core_stack():
+    h = num_units * u_size
+    core = Part.makeBox(u_size - 2*frame_clearance, u_size - 2*frame_clearance, h)
+    translate(core, frame_clearance, frame_clearance, 0)
+    return core
+
+def make_wing(deck_origin, direction=1):
+    hx, hy, hz = hinge_block
+    wing_parts = []
+    # Bisagra
+    hinge = Part.makeBox(hx, hy, hz)
+    translate(hinge, deck_origin[0] - (hx if direction < 0 else 0),
+              deck_origin[1] + hinge_offset, deck_origin[2] + hinge_offset)
+    wing_parts.append(hinge)
+    # Panel base
+    wing_len = wing_cells * wing_cell_len
+    base_panel = Part.makeBox(wing_len, wing_cell_wid, wing_panel_thk)
+    anchor_x = deck_origin[0] - (wing_len if direction < 0 else 0)
+    anchor_y = deck_origin[1] + (u_size - wing_cell_wid)/2 - frame_clearance/2
+    anchor_z = deck_origin[2]
+    translate(base_panel, anchor_x, anchor_y, anchor_z)
+    wing_parts.append(base_panel)
+    # Segmentación 1×12
+    for i in range(wing_cells):
+        cell = Part.makeBox(wing_cell_len - panel_gap, wing_cell_wid - panel_gap, wing_panel_thk)
+        cx = anchor_x + i*wing_cell_len + panel_gap/2
+        cy = anchor_y + panel_gap/2
+        cz = anchor_z + wing_panel_thk
+        translate(cell, cx, cy, cz)
+        wing_parts.append(cell)
+    return fuse_all(wing_parts)
+
+def top_module_origin(): return (u_size, 0, num_units*u_size)
+
+def make_base():
+    bx, by, bz = base_size
+    base = Part.makeBox(bx, by, bz)
+    translate(base, (u_size - bx)/2, (u_size - by)/2, -bz)
+    return base
+
+def make_base_rails():
+    bx, by, bz = base_size
+    rails = []
+    r1 = Part.makeBox(bx, base_rail_w, base_rail_w); translate(r1, (u_size - bx)/2, (u_size - by)/2, -base_rail_w)
+    r2 = Part.makeBox(bx, base_rail_w, base_rail_w); translate(r2, (u_size - bx)/2, (u_size - by)/2 + by - base_rail_w, -base_rail_w)
+    t1 = Part.makeBox(base_rail_w, by, base_rail_w); translate(t1, (u_size - bx)/2, (u_size - by)/2, -base_rail_w)
+    t2 = Part.makeBox(base_rail_w, by, base_rail_w); translate(t2, (u_size - bx)/2 + bx - base_rail_w, (u_size - by)/2, -base_rail_w)
+    rails += [r1, r2, t1, t2]
+    return rails
+
+def make_brackets_with_bolts():
+    bx, by, bz = base_size
+    brx, bry, brz = bracket_size
+    brackets, holes = [], []
+    corners = [
+        ((u_size - bx)/2, (u_size - by)/2, -brz),
+        ((u_size - bx)/2 + bx - brx, (u_size - by)/2, -brz),
+        ((u_size - bx)/2, (u_size - by)/2 + by - bry, -brz),
+        ((u_size - bx)/2 + bx - brx, (u_size - by)/2 + by - bry, -brz),
+    ]
+    for (x, y, z) in corners:
+        b = Part.makeBox(brx, bry, brz); translate(b, x, y, z); brackets.append(b)
+        cyl = Part.makeCylinder(bracket_bolt_d/2, brz); translate(cyl, x + brx/2, y + bry/2, z); holes.append(cyl)
+    return brackets, holes
+
+def build_cubesat():
+    parts = []
+    core = make_core_stack()
+    rails = make_vertical_rails()
+    beams = make_perimeter_beams()
+    side_panels = make_module_side_panels()
+    parts += [core] + rails + beams + side_panels
+    # Alas
+    wing_left = make_wing(deck_origin=(0, 0, num_units*u_size), direction=-1)
+    wing_right = make_wing(deck_origin=(u_size, 0, num_units*u_size), direction=+1)
+    parts += [wing_left, wing_right]
+    # Base
+    base = make_base()
+    base_rails = make_base_rails()
+    brackets, bolt_holes = make_brackets_with_bolts()
+    parts += [base] + base_rails + brackets
+    # Cuerpo principal sin taladros
+    sat = fuse_all(parts)
+    for h in bolt_holes: sat = sat.cut(h)
+    return sat
+
+# =========================================================
+# Propulsor CassiniUltra (tu script)
+# =========================================================
+P={"hull_outer_d":7000.0,"hull_t":85.0,"tank_len":11000.0,"tank_d":6000.0,"liner_t":36.0,
+   "tps_front_R":4200.0,"tps_front_t":220.0,"tps_offset":780.0,"shoulder_len":1600.0,
+   "bus_len":5200.0,"bus_outer_d":6800.0,"bus_inner_d":5600.0,
+   "frame_ring_d":4600.0,"frame_ring_t":140.0,"frame_step":800.0,"bulkhead_t":90.0,
+   "shield_shape":"box","rad_shield_inner_d":7600.0,"rad_shield_len":7600.0,"rad_shield_gap":120.0,
+   "whipple_t":80.0,"whipple_gap":300.0,"shield_box_L":7600.0,"shield_box_W":7600.0,"shield_box_H":7600.0,
+   "throat_d":900.0,"exit_d":5600.0,"nozzle_len":4600.0,"gimbal_ring_ro":2800.0,"gimbal_ring_t":160.0}
+
+def cyl_x(d,L,cx=0,cy=0,cz=0):
+    s=Part.makeCylinder(d/2.0,L)
+    s.Placement=App.Placement(App.Vector(cx-L/2.0,cy,cz),rot_to_x())
+    return s
+def cone_x(d1,d2,L,cx=0,cy=0,cz=0):
+    s=Part.makeCone(d1/2.0,d2/2.0,L)
+    s.Placement=App.Placement(App.Vector(cx-L/2.0,cy,cz),rot_to_x())
+    return s
+def sphere_section(R,t,cx):
+    so,si=Part.makeSphere(R),Part.makeSphere(R-t)
+    so.Placement=si.Placement=App.Placement(App.Vector(cx,0,0),App.Rotation())
+    box=Part.makeBox(2*R,4*R,4*R,App.Vector(cx,-2*R,-2*R))
+    return so.common(box).cut(si.common(box))
+def box_x(l,w,h,cx=0,cy=0,cz=0):
+    b=Part.makeBox(l,w,h)
+    b.Placement=App.Placement(App.Vector(cx-l/2.0,cy-w/2.0,cz-h/2.0),App.Rotation())
+    return b
+
+def build_propulsor_solid():
+    tank = cyl_x(P["tank_d"], P["tank_len"], cx=0)
+    liner = Part.makeCylinder((P["tank_d"]/2.0 - P["liner_t"]), P["tank_len"]-2*P["liner_t"],
+                              App.Vector(- (P["tank_len"]-2*P["liner_t"])/2.0, 0, 0), X_AXIS)
+    hull = cyl_x(P["hull_outer_d"], P["tank_len"], cx=0).cut(tank)
+    cap_center_x = P["tank_len"]/2.0 + P["tps_offset"]
+    tps_front = sphere_section(P["tps_front_R"], P["tps_front_t"], cap_center_x)
+    shoulder_cx = cap_center_x - P["shoulder_len"]/2.0
+    shoulder = cone_x(2*P["tps_front_R"], P["hull_outer_d"], P["shoulder_len"], cx=shoulder_cx)
+    bus_shell = cyl_x(P["bus_outer_d"], P["bus_len"], cx=0).cut(cyl_x(P["bus_inner_d"], P["bus_len"]-2*P["hull_t"], cx=0))
+    rings=[]
+    for k in range(int(P["bus_len"]/P["frame_step"])+1):
+        cx_ring = -P["bus_len"]/2.0 + k*P["frame_step"]
+        ring = cyl_x(P["frame_ring_d"], P["frame_ring_t"], cx=cx_ring).cut(
+            cyl_x(P["frame_ring_d"]-2*P["frame_ring_t"], P["frame_ring_t"], cx=cx_ring))
+        rings.append(ring)
+    nozzle_axis_cx = -P["tank_len"]/2.0 - P["nozzle_len"]/2.0
+    nozzle_body = cyl_x(P["exit_d"], P["nozzle_len"], cx=nozzle_axis_cx)
+    nozzle_core = cone_x(P["exit_d"], P["throat_d"], P["nozzle_len"], cx=nozzle_axis_cx)
+    nozzle = nozzle_body.cut(nozzle_core)
+    layers=[(80.0,(0.9,0.9,0.6),"PE_Layer"),
+            (60.0,(0.3,0.3,0.3),"CFRP_Layer"),
+            (40.0,(0.5,0.5,0.7),"W_Layer")]
+    curL,curW,curH = P["shield_box_L"],P["shield_box_W"],P["shield_box_H"]
+    shield_total = None
+    for t_layer,col,name in layers:
+        outer = box_x(curL+2*t_layer,curW+2*t_layer,curH+2*t_layer,cx=0)
+        inner = box_x(curL,curW,curH,cx=0)
+        layer_solid = outer.cut(inner)
+        shield_total = layer_solid if shield_total is None else shield_total.fuse(layer_solid)
+        curL,curW,curH = curL+2*t_layer, curW+2*t_layer, curH+2*t_layer
+    wh_outer = box_x(curL+2*P["whipple_gap"],curW+2*P["whipple_gap"],curH+2*P["whipple_gap"],cx=0)
+    wh_inner = box_x(curL+2*P["whipple_gap"]-2*P["whipple_t"],curW+2*P["whipple_gap"]-2*P["whipple_t"],curH+2*P["whipple_gap"]-2*P["whipple_t"],cx=0)
+    whipple = wh_outer.cut(wh_inner)
+    shield_total = shield_total.fuse(whipple)
+    solid = hull.fuse(liner).fuse(tps_front).fuse(shoulder).fuse(bus_shell).fuse(nozzle)
+    for r in rings: solid = solid.fuse(r)
+    solid = solid.fuse(shield_total).removeSplitter()
+    return solid
+
+# =========================================================
+# Interfaz de acople y ensamblaje
+# =========================================================
+def make_adapter_plate():
+    plate = Part.makeBox(adapter_plate_t, adapter_plate_w, adapter_plate_h)
+    # Ubicar en la cara X- del CubeSat (x = 0 - plate_thickness)
+    translate(plate, -adapter_plate_t, (u_size - adapter_plate_w)/2, (num_units*u_size - adapter_plate_h)/2)
+    # Taladros en esquinas (patrón 4)
+    holes = []
+    for dy in [adapter_hole_margin, adapter_plate_w - adapter_hole_margin]:
+        for dz in [adapter_hole_margin, adapter_plate_h - adapter_hole_margin]:
+            h = Part.makeCylinder(adapter_hole_d/2, adapter_plate_t + 2.0)
+            translate(h, -adapter_plate_t - 2.0, (u_size - adapter_plate_w)/2 + dy, (num_units*u_size - adapter_plate_h)/2 + dz)
+            holes.append(h)
+    plate = plate.cut(fuse_all(holes))
+    return plate
+
+def assemble():
+    # Construir CubeSat y mostrar
+    cubesat = build_cubesat()
+    sat_obj = add_obj(cubesat, "CubeSat_3U")
+    # Adaptador posterior
+    adapter = make_adapter_plate()
+    adapter_obj = add_obj(adapter, "AdapterPlate_Xminus")
+    # Construir propulsor
+    prop = build_propulsor_solid()
+    # Alinear propulsor: su eje principal es X; queremos que se acople centrado en Y/Z y
+    # con su extremo "bus" tocando la placa adaptadora con un pequeño gap
+    # Caja de límites del propulsor para obtener su extremo más cercano al CubeSat
+    bb = prop.BoundBox
+    prop_len_x = bb.XMax - bb.XMin
+    # Posición de acople: colocar XMin a -adapter_plate_t - propulsor_gap
+    x_target = -adapter_plate_t - propulsor_gap
+    # Centro en Y/Z del CubeSat
+    y_center = u_size/2
+    z_center = (num_units*u_size)/2
+    # Trasladar propulsor para que su XMin coincida con x_target y su centro Y/Z quede alineado
+    dx = x_target - bb.XMin
+    dy = y_center - (bb.YMin + (bb.YMax - bb.YMin)/2.0)
+    dz = z_center - (bb.ZMin + (bb.ZMax - bb.ZMin)/2.0)
+    translate(prop, dx, dy, dz)
+    prop_obj = add_obj(prop, "CassiniUltra_GreenPropulsor_Solid")
+    # Colores básicos
+    if hasattr(sat_obj,"ViewObject"): sat_obj.ViewObject.ShapeColor = (0.55,0.58,0.62)
+    if hasattr(adapter_obj,"ViewObject"): adapter_obj.ViewObject.ShapeColor = (0.30,0.30,0.35)
+    if hasattr(prop_obj,"ViewObject"): prop_obj.ViewObject.ShapeColor = (0.60,0.65,0.70)
+    # Opcional: crear brida perimetral (simple frame alrededor de la placa) para coherencia mecánica
+    flange_t = 2.0; flange_w = adapter_plate_w; flange_h = adapter_plate_h
+    f1 = Part.makeBox(flange_t, flange_w, flange_t); translate(f1, -adapter_plate_t - flange_t, (u_size - flange_w)/2, (num_units*u_size - flange_h)/2)
+    f2 = Part.makeBox(flange_t, flange_w, flange_t); translate(f2, -adapter_plate_t - flange_t, (u_size - flange_w)/2, (num_units*u_size - flange_h)/2 + flange_h - flange_t)
+    f3 = Part.makeBox(flange_t, flange_t, flange_h - 2*flange_t); translate(f3, -adapter_plate_t - flange_t, (u_size - flange_w)/2, (num_units*u_size - flange_h)/2 + flange_t)
+    f4 = Part.makeBox(flange_t, flange_t, flange_h - 2*flange_t); translate(f4, -adapter_plate_t - flange_t, (u_size - flange_w)/2 + flange_w - flange_t, (num_units*u_size - flange_h)/2 + flange_t)
+    flange = fuse_all([f1,f2,f3,f4])
+    flange_obj = add_obj(flange, "AdapterFlange")
+    if hasattr(flange_obj,"ViewObject"): flange_obj.ViewObject.ShapeColor = (0.25,0.25,0.28)
+
+assemble()
+doc.recompute()
+Gui.SendMsgToActiveView("ViewFit")

@@ -1,0 +1,278 @@
+# -*- coding: utf-8 -*-
+# Macro: StarSat Industrial Sci-Fi CAD Metal Hybrid
+# Autor: Copilot para Víctor (Madrid)
+
+import FreeCAD as App, FreeCADGui as Gui
+import Part, math, random
+
+DOC_NAME = "StarSat_Industrial_Hybrid"
+if App.ActiveDocument is None or App.ActiveDocument.Label != DOC_NAME:
+    App.newDocument(DOC_NAME)
+doc = App.ActiveDocument
+
+# -------------------------------
+# Parámetros híbridos
+# -------------------------------
+P = dict(
+    # Bus / casco
+    wall_thk=2.0, chamfer_val=0.8,
+    bus_w=60.0, bus_d=60.0, bus_h=80.0,
+    prow_len=80.0, stern_len=60.0, deck_thk=3.0,
+    hull_scale=1.15,
+    # Reactor / propulsión
+    reactor_d=40.0, reactor_l=80.0,
+    nozzle_throat_d=12.0, nozzle_exit_d=40.0, nozzle_l=50.0,
+    # Arrays solares
+    panel_len=160.0, panel_w=50.0, panel_t=2.5,
+    panel_segments=3, panel_deploy_deg=25.0,
+    array_cell_w=10.0, array_cell_h=10.0,
+    # Antena
+    dish_diameter=55.0, dish_depth=10.0, dish_thickness=1.5,
+    boom_len=40.0,
+    # Tanques esféricos
+    sphere_r=20.0, sphere_gap=50.0,
+    # Corte técnico
+    cut_plane_x=40.0, cut_plane_th=2.0,
+    # Colores
+    col_hull=(0.75,0.76,0.78),
+    col_panel=(0.06,0.08,0.20),
+    col_metal=(0.70,0.70,0.72),
+    col_detail=(0.5,0.5,0.5)
+)
+
+# -------------------------------
+# Utilidades
+# -------------------------------
+def add_obj(shape, name, color=None, group=None):
+    obj = doc.addObject("Part::Feature", name)
+    obj.Shape = shape
+    if color:
+        try: obj.ViewObject.ShapeColor = color
+        except: pass
+    if group: group.addObject(obj)
+    return obj
+
+def T(shape, v): return shape.translate(App.Vector(*v))
+def R(shape, axis, ang, center=(0,0,0)):
+    return shape.rotate(App.Vector(*center), App.Vector(*axis), ang)
+
+def centered_box(w,d,h): return Part.makeBox(w,d,h).translate(App.Vector(-w/2,-d/2,-h/2))
+def cyl(h,r,axis='Z',center=False):
+    c = Part.makeCylinder(r,h)
+    if axis=='X': c = R(c,(0,1,0),90)
+    if axis=='Y': c = R(c,(1,0,0),90)
+    if center:
+        if axis=='Z': c.translate(App.Vector(0,0,-h/2))
+        if axis=='X': c.translate(App.Vector(-h/2,0,0))
+        if axis=='Y': c.translate(App.Vector(0,-h/2,0))
+    return c
+def cone(r1,r2,h,axis='Z',center=False):
+    c = Part.makeCone(r1,r2,h)
+    if axis=='X': c = R(c,(0,1,0),90)
+    if axis=='Y': c = R(c,(1,0,0),90)
+    if center:
+        if axis=='Z': c.translate(App.Vector(0,0,-h/2))
+        if axis=='X': c.translate(App.Vector(-h/2,0,0))
+        if axis=='Y': c.translate(App.Vector(0,-h/2,0))
+    return c
+def chamfer(shape,val):
+    try: return shape.makeChamfer(val, shape.Edges)
+    except: return shape
+
+# -------------------------------
+# Grupos
+# -------------------------------
+g_root = doc.addObject("App::DocumentObjectGroup","StarSat")
+g_bus = doc.addObject("App::DocumentObjectGroup","Bus_and_Systems"); g_root.addObject(g_bus)
+g_ship = doc.addObject("App::DocumentObjectGroup","ShipShell"); g_root.addObject(g_ship)
+g_pan = doc.addObject("App::DocumentObjectGroup","SolarArrays"); g_root.addObject(g_pan)
+g_acpl = doc.addObject("App::DocumentObjectGroup","Acoplamientos"); g_root.addObject(g_acpl)
+g_det = doc.addObject("App::DocumentObjectGroup","Details"); g_root.addObject(g_det)
+
+# -------------------------------
+# Construcción
+# -------------------------------
+# Bus central
+outer = centered_box(P['bus_w'],P['bus_d'],P['bus_h'])
+inner = centered_box(P['bus_w']-2*P['wall_thk'],P['bus_d']-2*P['wall_thk'],P['bus_h']-2*P['wall_thk'])
+bus = chamfer(outer.cut(inner),P['chamfer_val'])
+bus_obj = add_obj(bus,"Bus",P['col_hull'],g_bus)
+
+# Deck
+hull_len = P['bus_w']*P['hull_scale']+P['prow_len']+P['stern_len']
+hull_w = P['bus_d']*P['hull_scale']
+deck = centered_box(hull_len,hull_w,P['deck_thk'])
+deck_obj = add_obj(chamfer(deck,P['chamfer_val']),"Deck",P['col_hull'],g_ship)
+
+# Reactor + boquilla
+reactor = cyl(P["reactor_l"], P["reactor_d"]/2.0, axis='X', center=True)
+reactor = T(reactor,(P["bus_w"]/2.0+P["reactor_l"]/2.0,0,0))
+add_obj(reactor,"Reactor",P["col_metal"],g_ship)
+
+nozzle = cone(P["nozzle_throat_d"]/2.0,P["nozzle_exit_d"]/2.0,P["nozzle_l"],axis='X',center=True)
+nozzle = T(nozzle,(P["bus_w"]/2.0+P["reactor_l"]+P["nozzle_l"]/2.0,0,0))
+add_obj(nozzle,"Main_Nozzle",P["col_metal"],g_ship)
+
+# Arrays solares con mosaico
+for side in [-1,1]:
+    frame = centered_box(P["panel_len"],P["panel_w"],P["panel_t"])
+    frame = T(frame,(0,side*(P["bus_d"]/2.0+P["boom_len"]),0))
+    add_obj(frame,f"SolarArray_Frame_{'L' if side<0 else 'R'}",P["col_panel"],g_pan)
+    # Mosaico de celdas
+    nx = int(P["panel_len"]/P["array_cell_w"])
+    nz = int(P["panel_w"]/P["array_cell_h"])
+    for ix in range(nx):
+        for iz in range(nz):
+            cell = centered_box(P["array_cell_w"]*0.9,P["array_cell_h"]*0.9,P["panel_t"])
+            cell = T(cell,(ix*P["array_cell_w"]-P["panel_len"]/2.0+P["array_cell_w"]/2.0,
+                           side*(P["bus_d"]/2.0+P["boom_len"]),
+                           iz*P["array_cell_h"]-P["panel_w"]/2.0+P["array_cell_h"]/2.0))
+            add_obj(cell,f"Cell_{ix}_{iz}_{'L' if side<0 else 'R'}",P["col_detail"],g_pan)
+
+# Antena
+dish = cone(0,P["dish_diameter"]/2.0,P["dish_depth"],axis='Y',center=True)
+dish = T(dish,(P["bus_w"]/2.0+P["boom_len"],0,0))
+add_obj(dish,"Dish",P["col_metal"],g_det)
+
+# Tanques esféricos
+sphere_L = Part.makeSphere(P["sphere_r"])
+sphere_L.translate(App.Vector(-P["bus_w"]/2.0-P["sphere_r"],-P["sphere_gap"]/2.0,0))
+sphere_R = Part.makeSphere(P["sphere_r"])
+sphere_R.translate(App.Vector(-P["bus_w"]/2.0-P["sphere_r"], P["sphere_gap"]/2.0,0))
+add_obj(sphere_L,"Tank_L",P["col_metal"],g_bus)
+add_obj(sphere_R,"Tank_R",P["col_metal"],g_bus)
+# Corte técnico
+cut_plane = centered_box(P["cut_plane_th"], P["bus_d"]*1.4, P["bus_h"]*1.4)
+# Posicionamos el plano en X (corte transversal del bus)
+cut_plane.translate(App.Vector(P["cut_plane_x"] - P["cut_plane_th"]/2.0, 0, 0))
+cut_obj = add_obj(cut_plane, "Cut_Plane", P["col_detail"], g_ship)
+
+# Aplicamos el corte al bus y al deck para generar la vista seccionada
+try:
+    bus_cut = bus_obj.Shape.cut(cut_plane)
+    deck_cut = deck_obj.Shape.cut(cut_plane)
+    bus_obj = add_obj(bus_cut, "Bus_Cutaway", P["col_hull"], g_bus)
+    deck_obj = add_obj(deck_cut, "Deck_Cutaway", P["col_hull"], g_ship)
+except:
+    pass
+
+# Interior mínimo (asientos y consola) como bloques de referencia
+seat_w, seat_d, seat_h = 18.0, 20.0, 22.0
+seat_L = centered_box(seat_w, seat_d, seat_h)
+seat_R = centered_box(seat_w, seat_d, seat_h)
+
+# Colocación de asientos dentro del bus, próximos al plano de corte
+seat_offset_x = P["cut_plane_x"] - 10.0
+seat_L.translate(App.Vector(seat_offset_x, -P["bus_d"]/4.0, -P["bus_h"]/6.0))
+seat_R.translate(App.Vector(seat_offset_x,  P["bus_d"]/4.0, -P["bus_h"]/6.0))
+
+console_w, console_d, console_h = 26.0, 18.0, 8.0
+console = centered_box(console_w, console_d, console_h)
+console.translate(App.Vector(seat_offset_x + 14.0, 0.0, -P["bus_h"]/6.0))
+
+add_obj(seat_L, "Seat_L", P["col_detail"], g_bus)
+add_obj(seat_R, "Seat_R", P["col_detail"], g_bus)
+add_obj(console, "Console", P["col_detail"], g_bus)
+
+# Despliegue opcional de paneles (rotación alrededor del eje de raíz)
+# Si quieres animarlo, ajusta panel_deploy_deg
+try:
+    for obj in g_pan.Group:
+        if obj.Label.startswith("SolarArray_Frame_"):
+            # Centro de rotación en el canto junto al bus
+            side = -1 if obj.Label.endswith("_L") else 1
+            # Calculamos pivote aproximado
+            pivot = App.Vector(0, side*(P["bus_d"]/2.0), 0)
+            # Trasladamos al pivote, rotamos y devolvemos
+            s = obj.Shape
+            s.translate(-pivot)
+            s.rotate(App.Vector(0,0,0), App.Vector(0,0,1), side * P["panel_deploy_deg"])
+            s.translate(pivot)
+            obj.Shape = s
+except:
+    pass
+
+# Bandas de sujeción en tanques esféricos (detalle)
+band_w, band_th = 6.0, 1.5
+def sphere_band(cx, cy, cz, r, w, th, axis='X'):
+    ring_out = cyl(w, r, axis=axis, center=True)
+    ring_in  = cyl(w+0.1, r-th, axis=axis, center=True)
+    band = ring_out.cut(ring_in)
+    band.translate(App.Vector(cx, cy, cz))
+    return band
+
+tankL_center = App.Vector(-P["bus_w"]/2.0 - P["sphere_r"], -P["sphere_gap"]/2.0, 0)
+tankR_center = App.Vector(-P["bus_w"]/2.0 - P["sphere_r"],  P["sphere_gap"]/2.0, 0)
+
+bandL_X = sphere_band(tankL_center.x, tankL_center.y, tankL_center.z, P["sphere_r"], band_w, band_th, axis='X')
+bandL_Y = sphere_band(tankL_center.x, tankL_center.y, tankL_center.z, P["sphere_r"], band_w, band_th, axis='Y')
+bandR_X = sphere_band(tankR_center.x, tankR_center.y, tankR_center.z, P["sphere_r"], band_w, band_th, axis='X')
+bandR_Y = sphere_band(tankR_center.x, tankR_center.y, tankR_center.z, P["sphere_r"], band_w, band_th, axis='Y')
+
+add_obj(bandL_X, "TankBandL_X", P["col_metal"], g_bus)
+add_obj(bandL_Y, "TankBandL_Y", P["col_metal"], g_bus)
+add_obj(bandR_X, "TankBandR_X", P["col_metal"], g_bus)
+add_obj(bandR_Y, "TankBandR_Y", P["col_metal"], g_bus)
+
+# Torre ligera (celosía básica) para antena
+tower_h = 90.0
+tower_w = 8.0
+tower_pitch = 12.0
+segments = []
+n = int(tower_h / tower_pitch) + 1
+tower_base_x = P["bus_w"]/2.0 + 6.0
+tower_side_y = P["bus_d"]/2.0 + 10.0
+
+for i in range(n):
+    z = -tower_h/2.0 + i*tower_pitch
+    seg = centered_box(tower_w, tower_w, tower_pitch*0.9)
+    seg.translate(App.Vector(tower_base_x, tower_side_y, z))
+    segments.append(seg)
+
+tower_shape = segments[0]
+for s in segments[1:]:
+    tower_shape = tower_shape.fuse(s)
+
+add_obj(tower_shape, "Comm_Tower", P["col_metal"], g_det)
+
+# Boom de antena (cilindro fino) y recolocación del plato
+boom_r = 2.0
+boom_len = P["boom_len"]
+boom = cyl(boom_len, boom_r, axis='X', center=True)
+boom.translate(App.Vector(P["bus_w"]/2.0 + boom_len/2.0, tower_side_y, 0))
+add_obj(boom, "Antenna_Boom", P["col_metal"], g_det)
+
+# Reposicionamos el dish a la punta del boom
+try:
+    dish_obj = [o for o in g_det.Group if o.Label == "Dish"][0]
+    s = dish_obj.Shape.copy()
+    # Borramos el anterior y creamos uno nuevo alineado con boom
+    doc.removeObject(dish_obj.Name)
+    dish = cone(0, P["dish_diameter"]/2.0, P["dish_depth"], axis='X', center=True)
+    dish.translate(App.Vector(P["bus_w"]/2.0 + boom_len, tower_side_y, 0))
+    add_obj(dish, "Dish", P["col_metal"], g_det)
+except:
+    pass
+
+# Unificación opcional del sólido para exportación
+MAKE_UNIFIED_SOLID = True
+if MAKE_UNIFIED_SOLID:
+    fuse_order = []
+    for grp in [g_bus, g_ship, g_pan, g_det]:
+        for o in grp.Group:
+            # Evita el plano de corte en la fusión (solo visual)
+            if o.Label != "Cut_Plane":
+                fuse_order.append(o.Shape)
+
+    if fuse_order:
+        final_shape = fuse_order[0]
+        for sh in fuse_order[1:]:
+            try:
+                final_shape = final_shape.fuse(sh)
+            except:
+                # Si alguna fusión falla, continua (evita colapsar todo)
+                pass
+        add_obj(final_shape, "Unified_StarSat", P["col_metal"], g_root)
+
+# Recompute final
+doc.recompute()

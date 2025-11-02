@@ -1,0 +1,404 @@
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+import math
+import os
+
+# --------------------------
+# Documento y configuración
+# --------------------------
+DOC_NAME = "Metallic_Spacecraft_Optic_Reactor"
+EXPORT_STEP = False
+STEP_PATH = os.path.join(App.getUserAppDataDir(), DOC_NAME + ".step")
+
+# Cierra documento previo con mismo nombre, limpia todo
+if App.ActiveDocument and App.ActiveDocument.Label == DOC_NAME:
+    doc = App.ActiveDocument
+    for o in list(doc.Objects):
+        try:
+            doc.removeObject(o.Name)
+        except Exception:
+            pass
+else:
+    for n, d in list(App.listDocuments().items()):
+        if d.Label == DOC_NAME:
+            App.closeDocument(n)
+    doc = App.newDocument(DOC_NAME)
+
+# --------------------------
+# Parámetros principales
+# (orientados a la estética de las imágenes 1–2)
+# --------------------------
+P = {
+    # Fuselaje
+    "nose_len": 800.0,
+    "nose_base_d": 600.0,
+    "mid_len": 1400.0,
+    "mid_d": 900.0,
+    "rear_len": 800.0,
+    "rear_d": 1200.0,
+    "hull_t": 10.0,
+
+    # Cockpit/ventanas laterales (opcional estilo CAD)
+    "cockpit_w": 900.0,
+    "cockpit_h": 400.0,
+    "cockpit_l": 600.0,
+    "cockpit_x0": 600.0,
+    "win_w": 600.0,
+    "win_h": 250.0,
+    "win_th": 20.0,
+    "win_z": 0.0,
+    "add_windows": True,
+
+    # Óptica / reactor
+    "reactor_d": 800.0,
+    "reactor_l": 900.0,
+    "reactor_cx": 2600.0,
+
+    # Anillos alrededor del reactor
+    "ring_h": 30.0,
+    "ring_ro": 420.0,
+    "ring_ri": 380.0,
+    "ring_n": 6,
+    "ring_pitch": 150.0,
+
+    # Bobinas / solenoides
+    "coil_rect_w": 80.0,
+    "coil_rect_h": 80.0,
+    "coil_R": 440.0,
+    "coil_n": 4,
+    "coil_span": 800.0,
+
+    # Moderador / blindaje
+    "moderator_t": 100.0,
+    "moderator_gap": 20.0,
+    "moderator_over": 200.0,
+
+    # Tungsteno posterior (aro interno)
+    "tungsten_post_t": 10.0,
+
+    # Tobera magnética
+    "nozzle_throat_d": 300.0,
+    "nozzle_exit_d": 900.0,
+    "nozzle_l": 700.0,
+    "nozzle_cx": 2850.0,
+    "nozzle_fillet_r": 40.0,
+
+    # Aro exterior de tungsteno en la salida
+    "nozzle_rim_over": 40.0,
+    "nozzle_rim_t": 10.0,
+    "nozzle_rim_L": 20.0,
+
+    # Paneles solares
+    "panel_w": 800.0,       # ancho panel
+    "panel_h": 600.0,       # alto panel
+    "panel_th": 12.0,       # espesor_panel
+    "panel_arm_L": 350.0,   # brazo de sujeción
+    "panel_gap": 100.0,     # separación vertical desde eje
+    "panel_mosaic_rows": 6, # subdivisiones visuales
+    "panel_mosaic_cols": 12,
+
+    # Envoltura térmica dorada (estética): espesor y cobertura
+    "insul_t": 6.0,
+    "insul_cover_from": 1000.0,  # x inicial de cobertura
+    "insul_cover_to": 2100.0,    # x final de cobertura
+}
+
+# --------------------------
+# Utilidades geométricas
+# --------------------------
+X_AXIS = App.Vector(1, 0, 0)
+Y_AXIS = App.Vector(0, 1, 0)
+Z_AXIS = App.Vector(0, 0, 1)
+
+def rot_to_x():
+    return App.Rotation(Y_AXIS, 90)
+
+def add_obj(shape, label, color=(0.75, 0.75, 0.78)):
+    obj = doc.addObject("Part::Feature", label)
+    obj.Shape = shape
+    try:
+        v = obj.ViewObject
+        v.ShapeColor = color
+        v.LineColor = (0.3, 0.3, 0.3)
+    except Exception:
+        pass
+    return obj
+
+def tag_material(obj, name, density=0.0):
+    try:
+        if not hasattr(obj, 'Material'):
+            obj.addProperty('App::PropertyString', 'Material', 'Physics', 'Material asignado')
+        if not hasattr(obj, 'Density'):
+            obj.addProperty('App::PropertyFloat', 'Density', 'Physics', 'Densidad kg/m^3')
+        obj.Material = str(name)
+        obj.Density = float(density)
+    except Exception:
+        pass
+
+def make_cyl_x(d, L, cx=0, cy=0, cz=0):
+    r = d / 2.0
+    c = Part.makeCylinder(r, L)
+    c.Placement = App.Placement(App.Vector(cx - L/2.0, cy, cz), rot_to_x())
+    return c
+
+def make_cone_x(d1, d2, L, cx=0, cy=0, cz=0):
+    r1 = d1 / 2.0
+    r2 = d2 / 2.0
+    c = Part.makeCone(r1, r2, L)
+    c.Placement = App.Placement(App.Vector(cx - L/2.0, cy, cz), rot_to_x())
+    return c
+
+def make_torus_x(R, r, cx=0, cy=0, cz=0):
+    t = Part.makeTorus(R, r)
+    t.Placement = App.Placement(App.Vector(cx, cy, cz), rot_to_x())
+    return t
+
+def make_box(w, d, h, cx=0, cy=0, cz=0):
+    b = Part.makeBox(w, d, h)
+    b.Placement = App.Placement(App.Vector(cx - w/2.0, cy - d/2.0, cz - h/2.0), App.Rotation())
+    return b
+
+def make_hollow_from_offset(s, t):
+    try:
+        inner = s.makeOffsetShape(-t, 0.01, join=2, fill=True)
+        return s.cut(inner)
+    except Exception as e:
+        App.Console.PrintWarning(f"Offset failed: {e}\n")
+        return s  # fallback sólido
+
+def fillet_safe(shape, r):
+    try:
+        edges = [e for e in shape.Edges if e.Length > (r * 0.2)]
+        if edges:
+            return shape.makeFillet(r, edges)
+        return shape
+    except Exception as e:
+        App.Console.PrintWarning(f"Fillet failed: {e}\n")
+        return shape
+
+# --------------------------
+# Validación básica
+# --------------------------
+def validate_params(P):
+    assert P["nose_len"] > 0 and P["nose_base_d"] > 0
+    assert P["mid_len"] > 0 and P["mid_d"] > 0
+    assert P["rear_len"] > 0 and P["rear_d"] > 0
+    assert P["nozzle_exit_d"] > P["nozzle_throat_d"] > 0
+    assert P["panel_w"] > 0 and P["panel_h"] > 0 and P["panel_th"] > 0
+    assert P["reactor_l"] > 0 and P["reactor_d"] > 0
+
+validate_params(P)
+
+# --------------------------
+# Construcción del fuselaje
+# --------------------------
+nose = make_cone_x(P["nose_base_d"], 0, P["nose_len"], cx=P["nose_len"]/2.0)
+mid  = make_cyl_x(P["mid_d"], P["mid_len"], cx=P["nose_len"] + P["mid_len"]/2.0)
+rear = make_cyl_x(P["rear_d"], P["rear_len"], cx=P["nose_len"] + P["mid_len"] + P["rear_len"]/2.0)
+
+fuselage_solid = nose.fuse(mid).fuse(rear)
+
+hull_shell = make_hollow_from_offset(fuselage_solid, P["hull_t"])
+
+hull_obj = add_obj(hull_shell, "Hull_Shell", color=(0.70, 0.72, 0.76))
+tag_material(hull_obj, "Aluminum-Li", 2700.0)
+
+# Ventanas laterales estilo CAD (opcional)
+if P.get("add_windows", False):
+    win_cx = P["cockpit_x0"] + P["cockpit_l"]/2.0
+    win_r = make_box(P["win_w"], P["win_th"], P["win_h"],
+                     cx=win_cx, cy=(P["mid_d"]/2.0) - P["win_th"]/2.0, cz=P["win_z"])
+    win_l = make_box(P["win_w"], P["win_th"], P["win_h"],
+                     cx=win_cx, cy=-(P["mid_d"]/2.0) + P["win_th"]/2.0, cz=P["win_z"])
+    try:
+        hull_cut_shape = hull_obj.Shape.cut(win_r).cut(win_l)
+        hull_obj.Shape = hull_cut_shape
+    except Exception as e:
+        App.Console.PrintWarning(f"Hull cut failed: {e}\n")
+
+# Cockpit superior simplificado (suave, metálico)
+cockpit_box = Part.makeBox(P["cockpit_l"], P["cockpit_w"], P["cockpit_h"])
+cockpit_box.Placement = App.Placement(App.Vector(P["cockpit_x0"], -P["cockpit_w"]/2.0, -P["cockpit_h"]/2.0), App.Rotation())
+try:
+    cockpit_box = fillet_safe(cockpit_box, 20.0)
+except Exception:
+    pass
+cockpit_obj = add_obj(cockpit_box, "Cockpit_Block", color=(0.78, 0.78, 0.80))
+tag_material(cockpit_obj, "Aluminum", 2700.0)
+
+# --------------------------
+# Reactor y elementos asociados
+# --------------------------
+reactor_core = make_cyl_x(P["reactor_d"], P["reactor_l"], cx=P["reactor_cx"])
+reactor_obj = add_obj(reactor_core, "Reactor_Core", color=(0.74, 0.76, 0.80))
+tag_material(reactor_obj, "Steel-316L", 8000.0)
+
+# Anillos (torus) distribuidos por pitch
+rings = []
+rR = (P["ring_ro"] + P["ring_ri"]) / 2.0
+rr = (P["ring_ro"] - P["ring_ri"]) / 2.0
+x_start = P["reactor_cx"] - P["reactor_l"]/2.0 + P["ring_h"]/2.0
+
+for i in range(P["ring_n"]):
+    cx = x_start + i * P["ring_pitch"]
+    t = make_torus_x(rR, rr, cx=cx)
+    rings.append(t)
+
+rings_shape = rings[0]
+for r in rings[1:]:
+    rings_shape = rings_shape.fuse(r)
+rings_obj = add_obj(rings_shape, "Reactor_Rings", color=(0.68, 0.70, 0.74))
+tag_material(rings_obj, "Inconel", 8400.0)
+
+# Bobinas / solenoides (torus) a lo largo del span
+coils = []
+cx0 = P["reactor_cx"] - P["coil_span"]/2.0
+for i in range(P["coil_n"]):
+    cx = cx0 + (i / max(1, (P["coil_n"] - 1))) * P["coil_span"]
+    c = make_torus_x(P["coil_R"], max(P["coil_rect_w"], P["coil_rect_h"]) / 2.0, cx=cx)
+    coils.append(c)
+
+coils_shape = coils[0]
+for c in coils[1:]:
+    coils_shape = coils_shape.fuse(c)
+coils_obj = add_obj(coils_shape, "Reactor_Coils", color=(0.62, 0.64, 0.70))
+tag_material(coils_obj, "Copper", 8960.0)
+
+# Blindaje moderador (tubo hueco)
+mod_inner_r = P["reactor_d"]/2.0 + P["moderator_gap"]
+mod_outer_r = mod_inner_r + P["moderator_t"]
+mod_len = P["reactor_l"] + P["moderator_over"]
+mod_cx  = P["reactor_cx"]
+
+mod_outer = Part.makeCylinder(mod_outer_r, mod_len)
+mod_inner = Part.makeCylinder(mod_inner_r, mod_len + 0.25)
+mod_tube = mod_outer.cut(mod_inner)
+mod_tube.Placement = App.Placement(App.Vector(mod_cx - mod_len/2.0, 0, 0), rot_to_x())
+mod_obj = add_obj(mod_tube, "Shield_Moderator", color=(0.70, 0.72, 0.76))
+tag_material(mod_obj, "B4C_Composites", 2500.0)
+
+# Aro interno de tungsteno posterior
+tw_ro = P["reactor_d"]/2.0
+tw_ri = max(tw_ro - P["tungsten_post_t"], tw_ro * 0.9)
+tw_tube = Part.makeCylinder(tw_ro, P["tungsten_post_t"])
+tw_inner = Part.makeCylinder(tw_ri, P["tungsten_post_t"] + 0.25)
+tw_ring = tw_tube.cut(tw_inner)
+tw_ring.Placement = App.Placement(App.Vector(P["reactor_cx"] + P["reactor_l"]/2.0 - P["tungsten_post_t"]/2.0, 0, 0), rot_to_x())
+tw_obj = add_obj(tw_ring, "Tungsten_Posterior", color=(0.55, 0.55, 0.58))
+tag_material(tw_obj, "Tungsten", 19300.0)
+
+# --------------------------
+# Tobera magnética y filete de unión
+# --------------------------
+nozzle_cone = Part.makeCone(P["nozzle_throat_d"]/2.0, P["nozzle_exit_d"]/2.0, P["nozzle_l"])
+nozzle_cone.Placement = App.Placement(App.Vector(P["nozzle_cx"] - P["nozzle_l"]/2.0, 0, 0), rot_to_x())
+
+# Unir a la sección trasera con filete controlado
+try:
+    rear_f = Part.makeCylinder(P["rear_d"]/2.0, P["rear_len"])
+    rear_f.Placement = App.Placement(App.Vector(P["nose_len"] + P["mid_len"], 0, 0), rot_to_x())
+    filleted_mount = fillet_safe(rear_f.fuse(nozzle_cone), P["nozzle_fillet_r"])
+    nozzle_mount_obj = add_obj(filleted_mount, "Nozzle_Mount_Fillet", color=(0.68, 0.70, 0.72))
+except Exception as e:
+    App.Console.PrintWarning(f"Nozzle fillet failed: {e}\n")
+    nozzle_mount_obj = add_obj(nozzle_cone, "Nozzle", color=(0.68, 0.70, 0.72))
+tag_material(nozzle_mount_obj, "C-SiC", 3200.0)
+
+# Aro de tungsteno externo en la salida
+tn_ro = P["nozzle_exit_d"]/2.0 + P["nozzle_rim_over"]
+tn_ri = tn_ro - P["nozzle_rim_t"]
+tn_tube = Part.makeCylinder(tn_ro, P["nozzle_rim_L"])
+tn_inner = Part.makeCylinder(tn_ri, P["nozzle_rim_L"] + 0.25)
+tn_ring = tn_tube.cut(tn_inner)
+tn_ring.Placement = App.Placement(App.Vector(P["nozzle_cx"] + P["nozzle_l"]/2.0 - P["nozzle_rim_L"]/2.0, 0, 0), rot_to_x())
+tn_obj = add_obj(tn_ring, "Tungsten_Nozzle_Rim", color=(0.55, 0.55, 0.58))
+tag_material(tn_obj, "Tungsten", 19300.0)
+
+# --------------------------
+# Paneles solares estilo CAD
+# --------------------------
+def make_panel_mosaic(panel_w, panel_h, panel_th, rows, cols):
+    """Subdivide panel en celdas elevando solo líneas visuales (no booleans pesadas)."""
+    base = Part.makeBox(panel_w, panel_th, panel_h)
+    base.Placement = App.Placement(App.Vector(0, 0, 0), App.Rotation())
+    # Opcional: grabado leve como ranuras mediante cortes finos
+    try:
+        groove_t = max(0.5, panel_th * 0.08)
+        cell_w = panel_w / cols
+        cell_h = panel_h / rows
+        for i in range(1, cols):
+            x = i * cell_w
+            cut_line = Part.makeBox(0.4, groove_t, panel_h)
+            cut_line.Placement = App.Placement(App.Vector(x, (panel_th - groove_t)/2.0, 0), App.Rotation())
+            base = base.cut(cut_line)
+        for j in range(1, rows):
+            z = j * cell_h
+            cut_line = Part.makeBox(panel_w, groove_t, 0.4)
+            cut_line.Placement = App.Placement(App.Vector(0, (panel_th - groove_t)/2.0, z), App.Rotation())
+            base = base.cut(cut_line)
+    except Exception as e:
+        App.Console.PrintWarning(f"Mosaic grooves failed: {e}\n")
+    return base
+
+# Brazo de sujeción y dos paneles opuestos
+arm_L = P["panel_arm_L"]
+arm_R = 40.0
+arm = Part.makeCylinder(arm_R, arm_L)
+arm.Placement = App.Placement(App.Vector(P["mid_len"] + P["nose_len"] - arm_L/2.0, 0, P["panel_gap"]), rot_to_x())
+arm_obj = add_obj(arm, "Panel_Arm", color=(0.70, 0.72, 0.76))
+tag_material(arm_obj, "Aluminum", 2700.0)
+
+panel_base_R = make_panel_mosaic(P["panel_w"], P["panel_h"], P["panel_th"], P["panel_mosaic_rows"], P["panel_mosaic_cols"])
+panel_base_L = make_panel_mosaic(P["panel_w"], P["panel_h"], P["panel_th"], P["panel_mosaic_rows"], P["panel_mosaic_cols"])
+
+# Posicionar respecto al brazo, simétricos en Y
+panel_offset_x = P["mid_len"] + P["nose_len"]
+panel_offset_y = (P["rear_d"]/2.0) + 150.0  # fuera del fuselaje
+panel_offset_z = P["panel_gap"]
+
+panel_base_R.Placement = App.Placement(App.Vector(panel_offset_x, panel_offset_y, panel_offset_z), App.Rotation())
+panel_base_L.Placement = App.Placement(App.Vector(panel_offset_x, -panel_offset_y, panel_offset_z), App.Rotation())
+
+panel_R_obj = add_obj(panel_base_R, "Solar_Panel_R", color=(0.20, 0.22, 0.26))  # más oscuro, estilo celda
+panel_L_obj = add_obj(panel_base_L, "Solar_Panel_L", color=(0.20, 0.22, 0.26))
+tag_material(panel_R_obj, "Si-PV", 2330.0)
+tag_material(panel_L_obj, "Si-PV", 2330.0)
+
+# --------------------------
+# Envoltura térmica dorada estilizada
+# --------------------------
+def make_insulation_wrap(shell_shape, x0, x1, t):
+    """Crea una banda envolvente despiezada por corte y offset simple."""
+    # Caja que recubre el casco y luego se intersecta
+    W = P["rear_d"] + 200.0
+    H = P["mid_d"] + 200.0
+    L = max(50.0, x1 - x0)
+    box = Part.makeBox(L, W, H)
+    box.Placement = App.Placement(App.Vector(x0, -W/2.0, -H/2.0), App.Rotation())
+    try:
+        band = shell_shape.common(box)  # intersección con el casco
+        inner = band.makeOffsetShape(-t, 0.01, join=2, fill=True)
+        wrap = band.cut(inner)
+        return wrap
+    except Exception as e:
+        App.Console.PrintWarning(f"Insulation wrap failed: {e}\n")
+        return shell_shape.common(box)
+
+wrap_shape = make_insulation_wrap(hull_obj.Shape, P["insul_cover_from"], P["insul_cover_to"], P["insul_t"])
+wrap_obj = add_obj(wrap_shape, "Thermal_Insulation_Wrap", color=(0.85, 0.75, 0.35))  # dorado suave
+tag_material(wrap_obj, "MLI_Gold", 100.0)
+
+# --------------------------
+# Recomputa y exporta
+# --------------------------
+doc.recompute()
+
+if EXPORT_STEP:
+    try:
+        Part.export([o for o in doc.Objects if hasattr(o, "Shape")], STEP_PATH)
+        App.Console.PrintMessage(f"STEP exportado en: {STEP_PATH}\n")
+    except Exception as e:
+        App.Console.PrintWarning(f"Export STEP failed: {e}\n")
+
+print("Macro nave metálica 1–2 lista para iteración paramétrica")

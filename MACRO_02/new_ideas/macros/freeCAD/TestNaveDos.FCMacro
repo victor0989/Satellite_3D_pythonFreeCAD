@@ -1,0 +1,320 @@
+# -*- coding: utf-8 -*-
+import FreeCAD as App, FreeCADGui as Gui
+import Part, math
+
+DOC_NAME = "BlenderStyle_Ship_CAD_Enhanced"
+if App.ActiveDocument is None or App.ActiveDocument.Label != DOC_NAME:
+    App.newDocument(DOC_NAME)
+doc = App.ActiveDocument
+
+P = {
+    "nose_len": 800.0, "nose_base_d": 1100.0, "nose_cap_d": 520.0,
+    "mid_len": 2300.0, "mid_d": 1800.0, "rear_len": 1700.0, "rear_d": 2200.0,
+    "hull_t": 35.0, "hull_fillet_r": 40.0,
+    "cockpit_w": 980.0, "cockpit_h": 520.0, "cockpit_l": 860.0,
+    "cockpit_x0": 620.0, "cockpit_blend_r": 120.0,
+    "reactor_d": 1500.0, "reactor_l": 2100.0, "reactor_cx": 3400.0,
+    "nozzle_throat_d": 520.0, "nozzle_exit_d": 2000.0, "nozzle_l": 1900.0, "nozzle_cx": 4500.0, "nozzle_fillet_r": 140.0,
+    "truss_n": 12, "truss_tube_w": 160.0, "truss_R_attach": 950.0, "truss_len": 1200.0,
+    "shield_gap": 50.0, "shield_inner_t": 140.0, "shield_extend": 700.0,
+    "band_w": 150.0, "band_t": 24.0, "bands_n": 6, "band_fillet_r": 18.0,
+    "strake_w": 100.0, "strake_h": 48.0, "strake_pitch": 380.0,
+    "panel_depth": 4.0, "panel_w": 300.0, "panel_h": 180.0, "panel_pitch_x": 320.0, "panel_pitch_z": 210.0,
+    "groove_w": 12.0, "groove_d": 6.0,
+    "grille_w": 520.0, "grille_h": 280.0, "grille_t": 12.0,
+    "booster_n": 4, "booster_d": 900.0, "booster_l": 1650.0, "booster_ring_r": 1650.0,
+    "booster_nozzle_d": 620.0, "booster_nozzle_l": 420.0, "booster_brace_w": 220.0,
+    "base_ring_d": 2400.0, "base_ring_t": 120.0, "base_ring_w": 180.0,
+    "tank_r": 420.0, "tank_l": 2100.0, "tank_off": 1300.0,
+    "sphere_r": 480.0, "sphere_off": 1700.0,
+    "mast_l": 1100.0, "mast_r": 44.0, "dish_r": 420.0,
+    "leg_r": 110.0, "leg_l": 880.0, "foot_r": 280.0, "foot_t": 55.0,
+    "rad_panel_w": 900.0, "rad_panel_h": 70.0, "rad_panel_t": 30.0, "rad_panel_count": 8,
+    "side_thruster_d": 560.0, "side_thruster_l": 1150.0, "side_thruster_x": 2700.0,
+    "side_thruster_y": 1450.0, "side_thruster_z": -160.0,
+    "make_unified_solid": True,
+    # Solares/torre
+    "array_len": 1800.0, "array_w": 900.0, "array_frame_t": 36.0, "array_cell_w": 120.0, "array_cell_h": 120.0,
+    "tower_h": 1200.0, "tower_w": 220.0, "tower_pitch": 180.0,
+    # Corte técnico
+    "cut_plane_x": 3400.0, "cut_plane_th": 8.0,
+    # Tanques esféricos traseros
+    "rear_sphere_r": 520.0, "rear_sphere_gap": 160.0, "rear_band_w": 80.0, "rear_band_t": 14.0
+}
+
+def rot_to_x(): return App.Rotation(App.Vector(0,1,0), 90)
+
+def add_obj(shape, label, color=(0.70,0.70,0.72)):
+    obj = doc.addObject("Part::Feature", label)
+    obj.Shape = shape
+    try:
+        v = obj.ViewObject
+        v.ShapeColor = color
+        v.DisplayMode = "Shaded"
+    except:
+        pass
+    return obj
+
+def safe_fillet(shape, r):
+    try:
+        return shape.makeFillet(r, shape.Edges)
+    except:
+        try:
+            return shape.makeFillet(max(1.0, r*0.5), shape.Edges)
+        except:
+            return shape
+
+def make_cyl_x(d, L, cx=0, cy=0, cz=0):
+    c = Part.makeCylinder(d/2.0, L)
+    c.Placement = App.Placement(App.Vector(cx-L/2.0, cy, cz), rot_to_x())
+    return c
+
+def make_cone_x(d1, d2, L, cx=0, cy=0, cz=0):
+    c = Part.makeCone(d1/2.0, d2/2.0, L)
+    c.Placement = App.Placement(App.Vector(cx-L/2.0, cy, cz), rot_to_x())
+    return c
+
+def make_tube_x(d_o, d_i, L, cx=0, cy=0, cz=0):
+    o = Part.makeCylinder(d_o/2.0, L)
+    i = Part.makeCylinder(d_i/2.0, L+0.2)
+    t = o.cut(i)
+    t.Placement = App.Placement(App.Vector(cx-L/2.0, cy, cz), rot_to_x())
+    return t
+
+# Nose loft
+def make_nose_loft():
+    sections = []
+    radii = [P["nose_base_d"]/2.0, 450.0, 260.0, P["nose_cap_d"]/2.0]
+    xpos = [0, P["nose_len"]*0.35, P["nose_len"]*0.7, P["nose_len"]]
+    for r, x in zip(radii, xpos):
+        sections.append(Part.makeCircle(r, App.Vector(x,0,0), App.Vector(1,0,0)))
+    return Part.makeLoft(sections, True)
+
+nose = make_nose_loft()
+mid = make_cyl_x(P["mid_d"], P["mid_len"], cx=P["nose_len"])
+rear = make_cyl_x(P["rear_d"], P["rear_len"], cx=P["nose_len"]+P["mid_len"])
+fuse_fuselage = safe_fillet(nose.fuse(mid).fuse(rear), 4.0)
+
+# Hull shell
+try:
+    hull_inner = fuse_fuselage.makeOffsetShape(-P["hull_t"], 0.01, join=2, fill=True)
+    hull_shell = fuse_fuselage.cut(hull_inner)
+    hull_shell = safe_fillet(hull_shell, P["hull_fillet_r"])
+    hull_obj = add_obj(hull_shell, "Hull_Shell")
+except:
+    hull_obj = add_obj(fuse_fuselage, "Hull_Shell_Fallback")
+
+# Cockpit with blend
+cockpit_box = Part.makeBox(P["cockpit_l"], P["cockpit_w"], P["cockpit_h"])
+cockpit_box.Placement = App.Placement(App.Vector(P["cockpit_x0"], -P["cockpit_w"]/2.0, -P["cockpit_h"]/2.0), App.Rotation())
+blend_sphere = Part.makeSphere(P["cockpit_blend_r"])
+blend_sphere.Placement = App.Placement(App.Vector(P["cockpit_x0"]-P["cockpit_blend_r"]/2.0, 0, 0), App.Rotation())
+cockpit_vol = cockpit_box.fuse(blend_sphere)
+try:
+    ck_inner = cockpit_vol.makeOffsetShape(-12.0, 0.01, join=2, fill=True)
+    cockpit_shell = cockpit_vol.cut(ck_inner)
+    cockpit_obj = add_obj(cockpit_shell, "Cockpit_Integrated", color=(0.76,0.76,0.78))
+    hull_cut = hull_obj.Shape.cut(cockpit_vol)
+    hull_obj = add_obj(hull_cut, "Hull_With_Cockpit")
+except:
+    cockpit_obj = add_obj(cockpit_vol, "Cockpit_Integrated_Fallback")
+
+# Structural bands placed
+bands = []
+start_x = P["nose_len"] + 200.0
+pitch = (P["mid_len"] + P["rear_len"] - 2*P["band_w"]) / max(1, P["bands_n"])
+for i in range(P["bands_n"]):
+    b = Part.makeCylinder(P["mid_d"]/2.0 + P["band_t"], P["band_w"])
+    x = start_x + i * pitch
+    b.Placement = App.Placement(App.Vector(x,0,0), rot_to_x())
+    bands.append(b)
+band_union = bands[0]
+for b in bands[1:]:
+    band_union = band_union.fuse(b)
+band_union = safe_fillet(band_union, P["band_fillet_r"])
+bands_obj = add_obj(band_union, "Structural_Bands", color=(0.64,0.64,0.66))
+
+# Strakes placed at rear
+strakes = []
+for ang in [0, 90, 180, 270]:
+    s = Part.makeBox(P["strake_pitch"], P["strake_w"], P["strake_h"])
+    s.Placement = App.Placement(
+        App.Vector(P["nose_len"] + P["mid_len"] + 200.0, (P["rear_d"]/2.0 - P["strake_w"]/2.0) * math.cos(math.radians(ang)),
+                  (P["rear_d"]/2.0 - P["strake_h"]/2.0) * math.sin(math.radians(ang))),
+        App.Rotation()
+    )
+    strakes.append(s)
+strake_union = strakes[0]
+for s in strakes[1:]:
+    strake_union = strake_union.fuse(s)
+strakes_obj = add_obj(strake_union, "Strakes", color=(0.62,0.62,0.66))
+
+# Reactor and nozzle
+reactor_core = make_cyl_x(P["reactor_d"], P["reactor_l"], cx=P["reactor_cx"])
+reactor_obj = add_obj(reactor_core, "Reactor_Core", color=(0.68,0.68,0.70))
+throat = make_cyl_x(P["nozzle_throat_d"], 260.0, cx=P["nozzle_cx"]-P["nozzle_l"]/2.0-130.0)
+cone = make_cone_x(P["nozzle_throat_d"], P["nozzle_exit_d"], P["nozzle_l"], cx=P["nozzle_cx"])
+cone = safe_fillet(cone, P["nozzle_fillet_r"])
+nozzle_full = throat.fuse(cone)
+nozzle_obj = add_obj(nozzle_full, "Main_Nozzle", color=(0.74,0.74,0.76))
+
+# Shield tube
+inner_r = P["reactor_d"]/2.0 + P["shield_gap"]
+outer_r = inner_r + P["shield_inner_t"]
+len_mod = P["reactor_l"] + P["shield_extend"]
+shield_inner = Part.makeCylinder(inner_r, len_mod)
+shield_outer = Part.makeCylinder(outer_r, len_mod)
+shield_tube = shield_outer.cut(shield_inner)
+shield_tube.Placement = App.Placement(App.Vector(P["reactor_cx"]-len_mod/2.0,0,0), rot_to_x())
+shield_obj = add_obj(shield_tube, "Shield_Internal", color=(0.60,0.60,0.62))
+
+# Base ring
+base_x = P["nose_len"] + P["mid_len"] + P["rear_len"] - P["base_ring_w"]
+base_ring_outer = Part.makeCylinder(P["base_ring_d"]/2.0, P["base_ring_w"])
+base_ring_inner = Part.makeCylinder(P["base_ring_d"]/2.0 - P["base_ring_t"], P["base_ring_w"]+0.2)
+base_ring = base_ring_outer.cut(base_ring_inner)
+base_ring.Placement = App.Placement(App.Vector(base_x,0,0), rot_to_x())
+base_ring_obj = add_obj(base_ring, "Base_Ring", color=(0.66,0.66,0.68))
+
+# Boosters (ring)
+boosters = []
+for i in range(P["booster_n"]):
+    angle = i * (360.0 / P["booster_n"])
+    bx = P["nose_len"] + P["mid_len"] + P["rear_len"] + 50.0
+    by = (P["rear_d"]/2.0 + P["booster_ring_r"]) * math.cos(math.radians(angle))
+    bz = (P["rear_d"]/2.0 + P["booster_ring_r"]) * math.sin(math.radians(angle))
+    boosters.append(make_cyl_x(P["booster_d"], P["booster_l"], cx=bx, cy=by, cz=bz))
+boosters_union = boosters[0]
+for b in boosters[1:]: boosters_union = boosters_union.fuse(b)
+booster_obj = add_obj(boosters_union, "Boosters_Main", color=(0.70,0.70,0.72))
+
+# Radiator panels (bug fix + placement)
+rad_panels = []
+rad_len = P["rad_panel_t"]
+for i in range(P["rad_panel_count"]):
+    panel = Part.makeBox(rad_len, P["rad_panel_w"], P["rad_panel_h"])
+    panel.Placement = App.Placement(App.Vector(P["nose_len"]+200.0, -P["rad_panel_w"]/2.0 + i*(P["rad_panel_w"]*1.1), 0), rot_to_x())
+    rad_panels.append(panel)
+rad_union = rad_panels[0]
+for p in rad_panels[1:]: rad_union = rad_union.fuse(p)
+rad_obj = add_obj(rad_union, "Radiator_Panels", color=(0.62,0.64,0.68))
+
+# Side thrusters
+side_thrusters = []
+for sign in [-1, 1]:
+    st = make_cyl_x(P["side_thruster_d"], P["side_thruster_l"], cx=P["side_thruster_x"], cy=sign*P["side_thruster_y"], cz=P["side_thruster_z"])
+    side_thrusters.append(st)
+thrusters_union = side_thrusters[0]
+for s in side_thrusters[1:]: thrusters_union = thrusters_union.fuse(s)
+side_thr_obj = add_obj(thrusters_union, "Side_Thrusters", color=(0.64,0.66,0.68))
+
+# Fuel tanks: switch to spheres + bands
+sphere_L = Part.makeSphere(P["rear_sphere_r"])
+sphere_R = Part.makeSphere(P["rear_sphere_r"])
+sx = P["nose_len"] + P["mid_len"] + P["rear_len"]/2.0
+offset = P["rear_sphere_gap"]
+sphere_L.Placement = App.Placement(App.Vector(sx, -offset, 0), App.Rotation())
+sphere_R.Placement = App.Placement(App.Vector(sx,  offset, 0), App.Rotation())
+bandL_o = Part.makeCylinder(P["rear_sphere_r"], P["rear_band_w"])
+bandL_i = Part.makeCylinder(P["rear_sphere_r"]-P["rear_band_t"], P["rear_band_w"]+0.2)
+bandL = bandL_o.cut(bandL_i); bandL.Placement = App.Placement(App.Vector(sx-P["rear_band_w"]/2.0, -offset, 0), rot_to_x())
+bandR_o = Part.makeCylinder(P["rear_sphere_r"], P["rear_band_w"])
+bandR_i = Part.makeCylinder(P["rear_sphere_r"]-P["rear_band_t"], P["rear_band_w"]+0.2)
+bandR = bandR_o.cut(bandR_i); bandR.Placement = App.Placement(App.Vector(sx-P["rear_band_w"]/2.0, offset, 0), rot_to_x())
+tank_union = sphere_L.fuse(sphere_R).fuse(bandL).fuse(bandR)
+tank_obj = add_obj(tank_union, "Fuel_Tanks_Spherical", color=(0.68,0.70,0.72))
+
+# Sensor sphere (front)
+sphere_sensor = Part.makeSphere(P["sphere_r"])
+sphere_sensor.Placement = App.Placement(App.Vector(P["sphere_off"], 0, 0), App.Rotation())
+sphere_obj = add_obj(sphere_sensor, "Sensor_Sphere", color=(0.70,0.72,0.74))
+
+# Tower lattice + dish
+def make_tower_lattice(h, w, pitch, base_x, side=1):
+    segments = []
+    n = int(h / pitch) + 1
+    for i in range(n):
+        z = -h/2.0 + i * pitch
+        seg = Part.makeBox(w, w, pitch*0.9)
+        seg.Placement = App.Placement(App.Vector(base_x, side*(P["mid_d"]/2.0 + 120.0), z), App.Rotation())
+        segments.append(seg)
+    shape = segments[0]
+    for s in segments[1:]: shape = shape.fuse(s)
+    return shape
+
+tower = make_tower_lattice(P["tower_h"], P["tower_w"], P["tower_pitch"], P["nose_len"] + P["mid_len"]/2.0, side=1)
+tower_obj = add_obj(tower, "Comm_Tower", color=(0.58,0.60,0.62))
+
+mast = make_cyl_x(P["mast_r"]*2, P["mast_l"], cx=P["nose_len"] + P["mid_len"]/2.0)
+mast_obj = add_obj(mast, "Mast", color=(0.60,0.62,0.64))
+dish = Part.makeCone(0, P["dish_r"], 50)
+dish.Placement = App.Placement(App.Vector(P["nose_len"] + P["mid_len"]/2.0 + P["mast_l"], 0, 0), rot_to_x())
+dish_obj = add_obj(dish, "Antenna_Dish", color=(0.65,0.67,0.70))
+
+# Landing legs ring
+legs = []
+for x in [-1,1]:
+    for y in [-1,1]:
+        leg = make_cyl_x(P["leg_r"]*2, P["leg_l"], cx=base_x+P["leg_l"]/2.0, cy=x*P["mid_d"]/2.0, cz=y*P["mid_d"]/2.0)
+        legs.append(leg)
+leg_union = legs[0]
+for l in legs[1:]: leg_union = leg_union.fuse(l)
+foot = make_cyl_x(P["foot_r"]*2, P["foot_t"], cx=base_x+P["leg_l"]+P["foot_t"]/2.0)
+landing_obj = add_obj(foot.fuse(leg_union), "Landing_Legs", color=(0.62,0.64,0.66))
+
+# Solar arrays with frame and cell mosaic
+def make_panel_array(center_x, side=1):
+    frame = Part.makeBox(P["array_len"], P["array_w"], P["array_frame_t"])
+    frame.Placement = App.Placement(App.Vector(center_x - P["array_len"]/2.0, side*(P["mid_d"]/2.0 + 300.0), -P["array_w"]/2.0), App.Rotation(App.Vector(1,0,0),90))
+    # Mosaic cells
+    cells = []
+    nx = int(P["array_len"] / P["array_cell_w"])
+    nz = int(P["array_w"] / P["array_cell_h"])
+    for ix in range(nx):
+        for iz in range(nz):
+            cx = center_x - P["array_len"]/2.0 + ix * P["array_cell_w"]
+            cz = -P["array_w"]/2.0 + iz * P["array_cell_h"]
+            cell = Part.makeBox(P["array_cell_w"]*0.92, P["array_cell_h"]*0.92, P["panel_depth"])
+            cell.Placement = App.Placement(App.Vector(cx, side*(P["mid_d"]/2.0 + 300.0), cz), App.Rotation(App.Vector(1,0,0),90))
+            cells.append(cell)
+    mosaic = cells[0]
+    for c in cells[1:]: mosaic = mosaic.fuse(c)
+    return safe_fillet(frame.fuse(mosaic), 2.0)
+
+left_array = make_panel_array(P["nose_len"] + P["mid_len"]/2.0, side=1)
+right_array = make_panel_array(P["nose_len"] + P["mid_len"]/2.0, side=-1)
+arrays_union = left_array.fuse(right_array)
+arrays_obj = add_obj(arrays_union, "Solar_Arrays", color=(0.20,0.32,0.60))
+
+# Technical cut plane + minimal interior solids
+cut_plane = Part.makeBox(P["cut_plane_th"], P["mid_d"]*1.2, P["mid_d"]*1.2)
+cut_plane.Placement = App.Placement(App.Vector(P["cut_plane_x"] - P["cut_plane_th"]/2.0, -P["mid_d"]*0.6, -P["mid_d"]*0.6), App.Rotation())
+fuselage_cut = hull_obj.Shape.cut(cut_plane)
+hull_obj = add_obj(fuselage_cut, "Hull_Cutaway")
+
+# Minimal seats + console (inside)
+seat = Part.makeBox(380, 480, 520)
+seat.Placement = App.Placement(App.Vector(P["nose_len"] + 300.0, -220.0, -260.0), App.Rotation())
+seat2 = seat.copy(); seat2.Placement = App.Placement(App.Vector(P["nose_len"] + 300.0, 220.0, -260.0), App.Rotation())
+console = Part.makeBox(600, 600, 200)
+console.Placement = App.Placement(App.Vector(P["nose_len"] + 500.0, -300.0, -100.0), App.Rotation())
+interior = seat.fuse(seat2).fuse(console)
+interior_obj = add_obj(interior, "Interior_Blocking", color=(0.52,0.54,0.56))
+
+# Optional unified solid
+if P["make_unified_solid"]:
+    objs = [
+        hull_obj, cockpit_obj, bands_obj, strakes_obj, reactor_obj, nozzle_obj,
+        shield_obj, base_ring_obj, booster_obj, rad_obj, side_thr_obj, tank_obj,
+        sphere_obj, mast_obj, dish_obj, landing_obj, arrays_obj, tower_obj, interior_obj
+    ]
+    final_shape = objs[0].Shape
+    for o in objs[1:]:
+        try:
+            final_shape = final_shape.fuse(o.Shape)
+        except:
+            pass
+    final_obj = add_obj(final_shape, "Unified_Ship", color=(0.72,0.72,0.74))
+
+doc.recompute()
+# Macro: StarSatIndustrialSci-FiCADMetal

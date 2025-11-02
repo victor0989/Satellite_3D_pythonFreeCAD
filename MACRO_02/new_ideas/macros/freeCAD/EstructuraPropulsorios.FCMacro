@@ -1,0 +1,328 @@
+# FreeCAD macro: CubeSat_SolarStructure.py
+# Víctor: paramétrico, imprimible, modular. Probado con FreeCAD 0.21+ (Part/PartDesign)
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+import math
+
+DOC_NAME = "CubeSat_SolarStructure"
+try:
+    App.newDocument(DOC_NAME)
+except:
+    App.setActiveDocument(DOC_NAME)
+
+V = App.ActiveDocument
+
+# ---------------------------
+# Parámetros globales
+# ---------------------------
+P = {
+    "unit_size": 100.0,            # mm, 1U externo nominal
+    "wall_thickness": 2.6,         # mm, chasis externo
+    "rail_clearance": 2.0,         # mm, separación a rieles/edges
+    "electronics_box_clear": 3.0,  # mm, espacio libre entre caja y chasis
+    "box_wall": 2.8,               # mm, paredes caja blindada
+    "rib_thickness": 2.0,          # mm, costillas internas
+    "lid_overlap": 1.5,            # mm, solape de tapa
+    "screw_diam": 2.5,             # mm, tornillo tapa
+    "screw_clear": 0.3,            # mm, holgura
+    "hinge_pin": 2.0,              # mm, pin nominal
+    "hinge_clear": 0.3,            # mm, holgura bisagra
+    "panel_count_per_side": 2,     # cuántos paneles por borde largo
+    "panel_thickness": 2.0,        # lámina base del panel
+    "panel_rib": 1.5,              # refuerzo posterior
+    "cell_w": 50.0,                # ancho celda solar
+    "cell_h": 25.0,                # alto celda solar
+    "cell_gap": 2.0,               # separación entre celdas
+    "cell_depth": 1.0,             # profundidad cavity celda
+    "deploy_angle_deg": 0.0,       # ángulo de despliegue inicial
+    "enable_deployables": True,    # o paneles fijos
+    "enable_lid": True,            # tapa de electrónica
+    "enable_cable_channels": True, # canaletas para cableado
+    "enable_chamfers": True,       # chaflanes para imprimibilidad
+}
+
+# Helpers
+def add(obj, label):
+    obj.Label = label
+    V.addObject(obj)
+    return obj
+
+def make_box(x, y, z, label):
+    b = Part.makeBox(x, y, z)
+    return add(App.ActiveDocument.addObject("Part::Feature", label), label).Shape.__class__(b)
+
+def fuse(shapes):
+    s = shapes[0]
+    for t in shapes[1:]:
+        s = s.fuse(t)
+    return s
+
+def cut(a, b):
+    return a.cut(b)
+
+def translate(shape, vec):
+    shape.translate(App.Vector(*vec))
+    return shape
+
+def rotate(shape, axis_pt, axis_dir, angle_deg):
+    shape.rotate(App.Vector(*axis_pt), App.Vector(*axis_dir), angle_deg)
+    return shape
+
+# Wrapper para crear y devolver Part::Feature con Shape
+def feature(shape, label):
+    f = App.ActiveDocument.addObject("Part::Feature", label)
+    f.Shape = shape
+    return f
+
+# ---------------------------
+# 1) Chasis externo 1U
+# ---------------------------
+def build_chassis(P):
+    s = P["unit_size"]
+    t = P["wall_thickness"]
+    shell = Part.makeBox(s, s, s)
+    inner = Part.makeBox(s - 2*t, s - 2*t, s - 2*t)
+    inner.translate(App.Vector(t, t, t))
+    frame = shell.cut(inner)
+
+    if P["enable_chamfers"]:
+        # Chaflán en bordes exteriores principales (simple aproximación)
+        edges = [e for e in frame.Edges][:8]  # toma algunas aristas para ejemplo
+        frame = frame.makeChamfer(1.2, edges)
+
+    return feature(frame, "Chassis_1U")
+
+# ---------------------------
+# 2) Caja electrónica blindada
+# ---------------------------
+def build_electronics_box(P):
+    s = P["unit_size"]
+    t = P["wall_thickness"]
+    clr = P["electronics_box_clear"]
+    bw = P["box_wall"]
+    lid_ol = P["lid_overlap"]
+
+    outer = Part.makeBox(s - 2*(t + clr), s - 2*(t + clr), s - 2*(t + clr))
+    outer.translate(App.Vector(t + clr, t + clr, t + clr))
+    inner = Part.makeBox(outer.BoundBox.XLength - 2*bw,
+                         outer.BoundBox.YLength - 2*bw,
+                         outer.BoundBox.ZLength - 2*bw)
+    inner.translate(App.Vector(t + clr + bw, t + clr + bw, t + clr + bw))
+    box = outer.cut(inner)
+
+    # Costillas internas: en X y Y, a mitad de altura
+    rib_t = P["rib_thickness"]
+    bb = box.BoundBox
+    zmid = bb.ZMin + bb.ZLength/2.0
+    rib_x = Part.makeBox(bb.XLength - 2*bw, rib_t, rib_t)
+    rib_x.translate(App.Vector(bb.XMin + bw, bb.YMin + bw + 5, zmid))
+    rib_y = Part.makeBox(rib_t, bb.YLength - 2*bw, rib_t)
+    rib_y.translate(App.Vector(bb.XMin + bw + 5, bb.YMin + bw, zmid))
+
+    box = box.fuse(rib_x).fuse(rib_y)
+
+    # Tapa superior (si habilitado)
+    lid = None
+    if P["enable_lid"]:
+        lid_th = bw
+        lid = Part.makeBox(bb.XLength - 2*lid_ol, bb.YLength - 2*lid_ol, lid_th)
+        lid.translate(App.Vector(bb.XMin + lid_ol, bb.YMin + lid_ol, bb.ZMax - lid_th))
+
+        # Taladros para tornillos M2.5 en perímetro
+        screw_d = P["screw_diam"] + P["screw_clear"]
+        hole = Part.makeCylinder(screw_d/2.0, lid_th + 0.6)
+        holes = []
+        n_per_side = 4
+        for i in range(n_per_side):
+            u = (i+0.5)/n_per_side
+            # cuatro lados
+            for side in range(4):
+                if side == 0:
+                    x = bb.XMin + lid_ol + u*(bb.XLength - 2*lid_ol)
+                    y = bb.YMin + lid_ol + 2.5
+                elif side == 1:
+                    x = bb.XMin + lid_ol + u*(bb.XLength - 2*lid_ol)
+                    y = bb.YMax - lid_ol - 2.5
+                elif side == 2:
+                    x = bb.XMin + lid_ol + 2.5
+                    y = bb.YMin + lid_ol + u*(bb.YLength - 2*lid_ol)
+                else:
+                    x = bb.XMax - lid_ol - 2.5
+                    y = bb.YMin + lid_ol + u*(bb.YLength - 2*lid_ol)
+                h = hole.copy()
+                h.translate(App.Vector(x, y, bb.ZMax - lid_th))
+                holes.append(h)
+        for h in holes:
+            lid = lid.cut(h)
+
+    box_f = feature(box, "Electronics_Box")
+    if lid:
+        lid_f = feature(lid, "Electronics_Lid")
+        return box_f, lid_f
+    return box_f, None
+
+# ---------------------------
+# 3) Panel solar con cavidades
+# ---------------------------
+def build_solar_panel(P, length, height, label="Solar_Panel"):
+    pt = P["panel_thickness"]
+    pr = P["panel_rib"]
+    cell_w = P["cell_w"]
+    cell_h = P["cell_h"]
+    gap = P["cell_gap"]
+    depth = P["cell_depth"]
+
+    # Lámina base
+    panel = Part.makeBox(length, height, pt)
+
+    # Refuerzo posterior (marco perimetral)
+    rib = Part.makeBox(length, pr, pt)
+    rib_top = rib.copy()
+    rib_top.translate(App.Vector(0, height - pr, 0))
+    rib_left = Part.makeBox(pr, height, pt)
+    rib_right = rib_left.copy()
+    rib_right.translate(App.Vector(length - pr, 0, 0))
+    panel = fuse([panel, rib, rib_top, rib_left, rib_right])
+
+    # Matriz de cavidades para celdas
+    cols = max(1, int((length - 2*pr + gap) // (cell_w + gap)))
+    rows = max(1, int((height - 2*pr + gap) // (cell_h + gap)))
+    cutouts = []
+    for i in range(cols):
+        for j in range(rows):
+            x = pr + gap/2 + i*(cell_w + gap)
+            y = pr + gap/2 + j*(cell_h + gap)
+            if x + cell_w <= length - pr and y + cell_h <= height - pr:
+                pocket = Part.makeBox(cell_w, cell_h, depth)
+                pocket.translate(App.Vector(x, y, 0))
+                cutouts.append(pocket)
+    for c in cutouts:
+        panel = panel.cut(c)
+
+    return feature(panel, label)
+
+# ---------------------------
+# 4) Bisagra simple y tope mecánico
+# ---------------------------
+def build_hinge(P, width, label="Hinge"):
+    pin = P["hinge_pin"]
+    clr = P["hinge_clear"]
+    # Orejeta 1
+    lug_w = 6.0
+    lug_t = 3.0
+    lug_h = width
+    lug = Part.makeBox(lug_w, lug_h, lug_t)
+    # Taladro
+    hole = Part.makeCylinder((pin+clr)/2.0, lug_w+0.5)
+    hole.rotate(App.Vector(0,0,0), App.Vector(0,1,0), 90)
+    hole.translate(App.Vector(lug_w/2.0, lug_h/2.0, lug_t/2.0))
+    lug = lug.cut(hole)
+    # Tope mecánico (orejeta de choque)
+    stop = Part.makeBox(2.0, 8.0, 2.0)
+    stop.translate(App.Vector(lug_w-2.0, lug_h/2.0-4.0, lug_t))
+    hinge = lug.fuse(stop)
+    return feature(hinge, label)
+
+# ---------------------------
+# 5) Ensamblado de paneles en lados del chasis
+# ---------------------------
+def assemble_panels(P, chassis):
+    s = P["unit_size"]
+    rail = P["rail_clearance"]
+    count = P["panel_count_per_side"]
+    # Longitud útil por lado
+    usable = s - 2*rail
+    panel_h = 40.0  # altura de panel por módulo
+    spacing = 4.0
+
+    # Generar módulos por lado (X+, X-, Y+, Y-)
+    panels = []
+    for side in ["X+", "X-", "Y+", "Y-"]:
+        for i in range(count):
+            panel = build_solar_panel(P, usable, panel_h, f"Panel_{side}_{i}")
+            # Posicionar en borde
+            bb = chassis.Shape.BoundBox
+            if side == "X+":
+                x = bb.XMax
+                y = bb.YMin + rail
+                z = bb.ZMin + rail + i*(panel_h + spacing)
+                translate(panel.Shape, (x, y, z))
+                # Rotar a vertical y despliegue
+                rotate(panel.Shape, (x, y, z), (0,1,0), 90)
+            elif side == "X-":
+                x = bb.XMin
+                y = bb.YMin + rail
+                z = bb.ZMin + rail + i*(panel_h + spacing)
+                translate(panel.Shape, (x, y, z))
+                rotate(panel.Shape, (x, y, z), (0,1,0), -90)
+            elif side == "Y+":
+                x = bb.XMin + rail
+                y = bb.YMax
+                z = bb.ZMin + rail + i*(panel_h + spacing)
+                translate(panel.Shape, (x, y, z))
+                rotate(panel.Shape, (x, y, z), (1,0,0), -90)
+            else:  # Y-
+                x = bb.XMin + rail
+                y = bb.YMin
+                z = bb.ZMin + rail + i*(panel_h + spacing)
+                translate(panel.Shape, (x, y, z))
+                rotate(panel.Shape, (x, y, z), (1,0,0), 90)
+
+            # Bisagra
+            hinge = build_hinge(P, width=panel_h, label=f"Hinge_{side}_{i}")
+            hbb = hinge.Shape.BoundBox
+            # Posicionar hinge adyacente
+            if side in ["X+", "X-"]:
+                translate(hinge.Shape, (x - hbb.XLength, y, z))
+            else:
+                translate(hinge.Shape, (x, y - hbb.YLength, z))
+
+            # Aplicar ángulo de despliegue
+            if P["enable_deployables"]:
+                ang = P["deploy_angle_deg"]
+                # Rotar órbita alrededor del eje de bisagra aproximado
+                if side == "X+":
+                    rotate(panel.Shape, (x, y, z), (0,1,0), ang)
+                elif side == "X-":
+                    rotate(panel.Shape, (x, y, z), (0,1,0), -ang)
+                elif side == "Y+":
+                    rotate(panel.Shape, (x, y, z), (1,0,0), -ang)
+                else:
+                    rotate(panel.Shape, (x, y, z), (1,0,0), ang)
+
+            panels.append(panel)
+            panels.append(hinge)
+
+    return panels
+
+# ---------------------------
+# 6) Canaletas de cableado (opcional)
+# ---------------------------
+def build_cable_channels(P, chassis):
+    if not P["enable_cable_channels"]:
+        return []
+    t = 2.0
+    w = 6.0
+    bb = chassis.Shape.BoundBox
+    # Canal vertical interior en cada esquina
+    channels = []
+    for corner in [(bb.XMin+3, bb.YMin+3), (bb.XMin+3, bb.YMax-3),
+                   (bb.XMax-3, bb.YMin+3), (bb.XMax-3, bb.YMax-3)]:
+        ch = Part.makeBox(w, t, bb.ZLength-10)
+        ch.translate(App.Vector(corner[0]-w/2.0, corner[1]-t/2.0, bb.ZMin+5))
+        channels.append(feature(ch, "Cable_Channel"))
+    return channels
+
+# ---------------------------
+# Construcción
+# ---------------------------
+chassis = build_chassis(P)
+box, lid = build_electronics_box(P)
+panels = assemble_panels(P, chassis)
+channels = build_cable_channels(P, chassis)
+
+V.recompute()
+Gui.ActiveDocument.ActiveView.fitAll()
+print("CubeSat solar structure generated.")
