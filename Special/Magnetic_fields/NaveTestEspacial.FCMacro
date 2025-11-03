@@ -1,0 +1,459 @@
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part, math
+
+doc = App.newDocument("Sat_Blindado_v6")
+
+# =========================
+# Parámetros globales (m)
+# =========================
+P = {
+    # Cápsula (cilindro corto + tapas semiesféricas)
+    "D_core": 4.0,         # diámetro exterior
+    "H_total": 6.0,        # altura total cápsula (incluye semiesferas)
+    "t_core": 0.030,       # espesor casco Al
+
+    # Blindaje cápsula (Whipple + standoff)
+    "t_armor_core": 0.010,
+    "standoff_core": 0.030,
+
+    # Anillo toroidal rectangular hueco
+    "D_ring": 5.6,         # diámetro exterior del anillo
+    "W_ring": 0.22,        # espesor radial total del anillo
+    "t_ring": 0.012,       # espesor pared del anillo
+
+    # Stiffeners internos (aprox. tipo "hat")
+    "n_hat": 12, "hat_h": 0.05, "hat_w": 0.06, "hat_t": 0.004,
+
+    # Celosía radial y conectores
+    "n_sets": 8,           # posiciones radiales
+    "strut_OD": 0.18, "strut_t": 0.005,
+    "lug_OD": 0.12, "lug_t": 0.006,
+    "diag_z": 0.8,         # desfase Z para diagonales
+
+    # Bays (módulos cilíndricos gruesos)
+    "n_bays": 8, "bay_OD": 1.2, "bay_L": 2.6,
+    "bay_t": 0.010, "bay_armor_t": 0.010,
+    "bay_clear": 0.20,
+
+    # Propulsión (carcasa + conos)
+    "prop_L": 5.0, "prop_D": 2.5, "prop_t": 0.014,
+    "cone_L": 0.8, "nozzle_D": 0.8,
+
+    # COPV (4 depósitos)
+    "copv_n": 4, "copv_D": 1.0, "copv_L": 2.2,
+
+    # Antena
+    "dish_D": 2.5, "dish_h": 0.5, "dish_t": 0.004,
+    "mast_OD": 0.12, "mast_t": 0.006, "mast_L": 0.8,
+
+    # Paneles solares
+    "n_panels": 6, "p_L": 5.0, "p_W": 2.5, "p_T": 0.05, "boom_L": 0.8, "hinge_ang": 90.0,
+
+    # Bus de cables blindado
+    "bus_OD": 0.028, "bus_t": 0.004,
+
+    # Visual
+    "col_capsule": (0.75,0.75,0.80),
+    "col_armor":   (0.55,0.65,0.75),
+    "col_ring":    (0.70,0.70,0.72),
+    "col_hat":     (0.45,0.45,0.50),
+    "col_strut":   (0.60,0.60,0.62),
+    "col_bay":     (0.30,0.40,0.55),
+    "col_bayarm":  (0.25,0.35,0.50),
+    "col_prop":    (0.40,0.40,0.45),
+    "col_copv":    (0.20,0.25,0.30),
+    "col_panel":   (0.05,0.25,0.45),
+    "col_boom":    (0.20,0.25,0.30),
+    "col_bus":     (0.10,0.10,0.10),
+    "col_dish":    (0.85,0.85,0.90),
+}
+
+# Densidades (kg/m3)
+RHO = {"Al": 2840.0, "Ti": 4430.0, "CFRP": 1550.0, "KevlarCFRP": 1500.0, "Inconel": 8190.0, "COPVeq": 1700.0}
+
+# =========================
+# Utilidades
+# =========================
+def set_density(o, rho):
+    if not hasattr(o, "Density"):
+        o.addProperty("App::PropertyFloat", "Density", "Material", "kg/m3")
+    o.Density = rho
+
+def set_color(o, rgb):
+    try:
+        o.ViewObject.ShapeColor = rgb
+    except Exception:
+        pass
+
+def rotation_from_z(axis_vec):
+    v = App.Vector(axis_vec)
+    if v.Length == 0:
+        return App.Rotation()
+    return App.Rotation(App.Vector(0,0,1), v)
+
+def fqty(val):
+    # Convierte App.Units.Quantity u otros a float
+    try:
+        return float(val)
+    except Exception:
+        try:
+            return val.__float__()
+        except Exception:
+            return float(val)  # último intento
+
+def cyl_between(p1, p2, r, name):
+    v1 = App.Vector(p1); v2 = App.Vector(p2); axis = v2 - v1
+    c = doc.addObject("Part::Cylinder", name)
+    c.Radius = r; c.Height = axis.Length
+    c.Placement = App.Placement(v1, rotation_from_z(axis))
+    return c
+
+def tube_between(p1, p2, r_o, t, name):
+    r_i = max(1e-4, r_o - t)
+    co = cyl_between(p1, p2, r_o, name+"_O")
+    ci = cyl_between(p1, p2, r_i, name+"_I")
+    cut = doc.addObject("Part::Cut", name); cut.Base = co; cut.Tool = ci
+    return cut
+
+def make_face_from_poly(points):
+    edges = []
+    for i in range(len(points)):
+        p0 = points[i]; p1 = points[(i+1)%len(points)]
+        edges.append(Part.LineSegment(App.Vector(p0), App.Vector(p1)).toShape())
+    wire = Part.Wire(edges)
+    return Part.Face(wire)
+
+def revolve_face(face, axis_point=(0,0,0), axis_dir=(0,0,1), angle=360.0):
+    return face.revolve(App.Vector(axis_point), App.Vector(axis_dir), angle)
+
+def anillo_rect_hueco(D, W, t):
+    # Perfil rectangular en XZ, centrado a radio medio; revolve para crear sólido anular
+    Rmid = D/2.0 - W/2.0
+    x0 = Rmid - W/2.0; x1 = Rmid + W/2.0
+    z0 = -t/2.0; z1 = +t/2.0
+    face = make_face_from_poly([(x0,0,z0),(x1,0,z0),(x1,0,z1),(x0,0,z1)])
+    solid = revolve_face(face)
+    feat = doc.addObject("Part::Feature","RingRect"); feat.Shape = solid
+    return feat
+
+def hemispherical_shell(center_z, R, t, name, top=True):
+    # Cascarón hemisférico: esfera exterior - esfera interior, cortada por plano ecuatorial
+    s_o = doc.addObject("Part::Sphere", name+"_SO"); s_o.Radius = R; s_o.Placement.Base = App.Vector(0,0,center_z)
+    s_i = doc.addObject("Part::Sphere", name+"_SI"); s_i.Radius = max(1e-4, R - t); s_i.Placement.Base = App.Vector(0,0,center_z)
+    shell = doc.addObject("Part::Cut", name+"_Shell"); shell.Base = s_o; shell.Tool = s_i
+    # Cortes: mantener mitad superior (top) o inferior (bottom)
+    B = 30.0
+    if top:
+        # quitar media inferior hasta plano ecuatorial
+        box = doc.addObject("Part::Box", name+"_CutLow")
+        box.Length = box.Width = 2*B; box.Height = B + center_z
+        box.Placement.Base = App.Vector(-B,-B,-B)
+    else:
+        # quitar media superior
+        box = doc.addObject("Part::Box", name+"_CutUp")
+        box.Length = box.Width = 2*B; box.Height = B
+        box.Placement.Base = App.Vector(-B, -B, center_z)
+    hemi = doc.addObject("Part::Cut", name)
+    hemi.Base = shell; hemi.Tool = box
+    return hemi
+
+# =========================
+# Contenedores
+# =========================
+sat = doc.addObject("App::Part","SAT")
+grp_core = doc.addObject("App::Part","CoreCapsule")
+grp_ring = doc.addObject("App::Part","RingAssembly")
+grp_truss = doc.addObject("App::Part","TrussAndStruts")
+grp_bays = doc.addObject("App::Part","Bays")
+grp_prop = doc.addObject("App::Part","Propulsion")
+grp_pan  = doc.addObject("App::Part","PowerPanels")
+grp_comm = doc.addObject("App::Part","Comms")
+grp_bus  = doc.addObject("App::Part","PowerBus")
+for g in [grp_core, grp_ring, grp_truss, grp_bays, grp_prop, grp_pan, grp_comm, grp_bus]:
+    sat.addObject(g)
+
+# =========================
+# 1) Cápsula (cilindro + tapas semiesféricas) + blindaje/standoff
+# =========================
+R = P["D_core"]/2.0
+Hc = max(0.0, P["H_total"] - 2*R)  # altura del tramo cilíndrico
+
+# Casco cilíndrico hueco
+cyl_o = doc.addObject("Part::Cylinder","CoreCyl_O"); cyl_o.Radius = R; cyl_o.Height = Hc; cyl_o.Placement.Base = App.Vector(0,0,-Hc/2.0)
+cyl_i = doc.addObject("Part::Cylinder","CoreCyl_I"); cyl_i.Radius = max(1e-4, R - P["t_core"]); cyl_i.Height = Hc; cyl_i.Placement.Base = App.Vector(0,0,-Hc/2.0)
+core_cyl = doc.addObject("Part::Cut","CoreCyl"); core_cyl.Base = cyl_o; core_cyl.Tool = cyl_i
+grp_core.addObject(core_cyl); set_density(core_cyl, RHO["Al"]); set_color(core_cyl, P["col_capsule"])
+
+# Tapas semiesféricas (shell por corte)
+head_top = hemispherical_shell(+Hc/2.0, R, P["t_core"], "HeadTop", top=True)
+head_bot = hemispherical_shell(-Hc/2.0, R, P["t_core"], "HeadBot", top=False)
+grp_core.addObject(head_top); set_density(head_top, RHO["Al"]); set_color(head_top, P["col_capsule"])
+grp_core.addObject(head_bot); set_density(head_bot, RHO["Al"]); set_color(head_bot, P["col_capsule"])
+
+# Blindaje cápsula: cilindro + semiesferas desplazadas por standoff
+R_arm_i = R + P["standoff_core"]
+R_arm_o = R_arm_i + P["t_armor_core"]
+
+# Cilindro blindaje
+arm_cyl_o = doc.addObject("Part::Cylinder","CoreArmorCyl_O"); arm_cyl_o.Radius = R_arm_o; arm_cyl_o.Height = Hc; arm_cyl_o.Placement.Base = App.Vector(0,0,-Hc/2.0)
+arm_cyl_i = doc.addObject("Part::Cylinder","CoreArmorCyl_I"); arm_cyl_i.Radius = R_arm_i; arm_cyl_i.Height = Hc; arm_cyl_i.Placement.Base = App.Vector(0,0,-Hc/2.0)
+core_armor_cyl = doc.addObject("Part::Cut","CoreArmorCyl"); core_armor_cyl.Base = arm_cyl_o; core_armor_cyl.Tool = arm_cyl_i
+grp_core.addObject(core_armor_cyl); set_density(core_armor_cyl, RHO["KevlarCFRP"]); set_color(core_armor_cyl, P["col_armor"])
+
+# Semiesferas blindaje anulares
+arm_top = hemispherical_shell(+Hc/2.0, R_arm_o, P["t_armor_core"], "CoreArmorTop", top=True)
+mask_top = doc.addObject("Part::Sphere","_MaskTop"); mask_top.Radius = R_arm_i; mask_top.Placement.Base = App.Vector(0,0,+Hc/2.0)
+core_armor_top = doc.addObject("Part::Cut","CoreArmorHeadTop"); core_armor_top.Base = arm_top; core_armor_top.Tool = mask_top
+grp_core.addObject(core_armor_top); set_density(core_armor_top, RHO["KevlarCFRP"]); set_color(core_armor_top, P["col_armor"])
+
+arm_bot = hemispherical_shell(-Hc/2.0, R_arm_o, P["t_armor_core"], "CoreArmorBot", top=False)
+mask_bot = doc.addObject("Part::Sphere","_MaskBot"); mask_bot.Radius = R_arm_i; mask_bot.Placement.Base = App.Vector(0,0,-Hc/2.0)
+core_armor_bot = doc.addObject("Part::Cut","CoreArmorHeadBot"); core_armor_bot.Base = arm_bot; core_armor_bot.Tool = mask_bot
+grp_core.addObject(core_armor_bot); set_density(core_armor_bot, RHO["KevlarCFRP"]); set_color(core_armor_bot, P["col_armor"])
+
+# =========================
+# 2) Anillo rectangular hueco + stiffeners
+# =========================
+ring = anillo_rect_hueco(P["D_ring"], P["W_ring"], P["t_ring"])
+grp_ring.addObject(ring); set_density(ring, RHO["Ti"]); set_color(ring, P["col_ring"])
+
+Rring_o = P["D_ring"]/2.0 + P["W_ring"]/2.0   # radio exterior geométrico del anillo
+Rring_i = P["D_ring"]/2.0 - P["W_ring"]/2.0   # radio interior geométrico del anillo
+
+# Stiffeners "hat" internos aproximados
+Rmid = (Rring_o + Rring_i)/2.0
+for i in range(P["n_hat"]):
+    ang = i * 360.0 / P["n_hat"]
+    vx, vy = math.cos(math.radians(ang)), math.sin(math.radians(ang))
+    hat = doc.addObject("Part::Box", f"Hat_{i:02d}")
+    hat.Length = P["hat_w"]; hat.Width = 0.02; hat.Height = P["hat_h"]
+    hat.Placement.Rotation = App.Rotation(App.Vector(0,0,1), ang)
+    hat.Placement.Base = App.Vector(vx*Rmid - fqty(hat.Length)/2.0, vy*Rmid - fqty(hat.Width)/2.0, -fqty(hat.Height)/2.0)
+    grp_ring.addObject(hat); set_density(hat, RHO["Ti"]); set_color(hat, P["col_hat"])
+
+# =========================
+# 3) Struts con casquillos (cápsula↔anillo) y lazos tangenciales
+# =========================
+for i in range(P["n_sets"]):
+    ang = i * 360.0 / P["n_sets"]; rad = math.radians(ang)
+    vx, vy = math.cos(rad), math.sin(rad)
+
+    p_caps   = App.Vector(vx*R, vy*R, 0.0)
+    p_ring_i = App.Vector(vx*Rring_i, vy*Rring_i, 0.0)
+
+    # Radial principal
+    s_main = tube_between(p_caps, p_ring_i, P["strut_OD"]/2.0, P["strut_t"], f"Strut_CA_{i:02d}")
+    grp_truss.addObject(s_main); set_density(s_main, RHO["Ti"]); set_color(s_main, P["col_strut"])
+
+    # Diagonales top/bot
+    p_caps_top = App.Vector(vx*(R-0.05), vy*(R-0.05), +P["diag_z"])
+    p_caps_bot = App.Vector(vx*(R-0.05), vy*(R-0.05), -P["diag_z"])
+    s_top = tube_between(p_caps_top, p_ring_i, P["strut_OD"]/2.0, P["strut_t"], f"Strut_CA_top_{i:02d}")
+    s_bot = tube_between(p_caps_bot, p_ring_i, P["strut_OD"]/2.0, P["strut_t"], f"Strut_CA_bot_{i:02d}")
+    for s in (s_top, s_bot):
+        grp_truss.addObject(s); set_density(s, RHO["Ti"]); set_color(s, P["col_strut"])
+
+    # Casquillos esféricos (huecos)
+    for p in [p_caps, p_caps_top, p_caps_bot, p_ring_i]:
+        so = doc.addObject("Part::Sphere", f"LugO_{i:02d}"); so.Radius = P["lug_OD"]/2.0; so.Placement.Base = p
+        si = doc.addObject("Part::Sphere", f"LugI_{i:02d}"); si.Radius = max(1e-4, P["lug_OD"]/2.0 - P["lug_t"]); si.Placement.Base = p
+        lug = doc.addObject("Part::Cut", f"Lug_{i:02d}"); lug.Base = so; lug.Tool = si
+        grp_truss.addObject(lug); set_density(lug, RHO["Ti"]); set_color(lug, P["col_strut"])
+
+# =========================
+# 4) Bays (casco + blindaje) en corona
+# =========================
+Rmods_center = Rring_o + P["bay_clear"] + P["bay_OD"]/2.0
+bay_dirs = []
+for i in range(P["n_bays"]):
+    ang = i * 360.0 / P["n_bays"]; vx, vy = math.cos(math.radians(ang)), math.sin(math.radians(ang))
+    # Casco tubular hueco orientado radial
+    o = doc.addObject("Part::Cylinder", f"Bay_{i:02d}_O")
+    o.Radius = P["bay_OD"]/2.0; o.Height = P["bay_L"]
+    o.Placement.Rotation = App.Rotation(App.Vector(0,0,1), ang).multiply(App.Rotation(App.Vector(0,1,0), 90))
+    o.Placement.Base = App.Vector(vx*Rmods_center, vy*Rmods_center, -fqty(o.Height)/2.0)
+    ii = doc.addObject("Part::Cylinder", f"Bay_{i:02d}_I"); ii.Radius = max(1e-4, P["bay_OD"]/2.0 - P["bay_t"]); ii.Height = P["bay_L"]; ii.Placement = o.Placement
+    shell = doc.addObject("Part::Cut", f"Bay_{i:02d}_Shell"); shell.Base = o; shell.Tool = ii
+    grp_bays.addObject(shell); set_density(shell, RHO["Al"]); set_color(shell, P["col_bay"])
+
+    # Blindaje anular
+    ao = doc.addObject("Part::Cylinder", f"Bay_{i:02d}_ArmO"); ao.Radius = P["bay_OD"]/2.0 + P["bay_armor_t"]; ao.Height = P["bay_L"]; ao.Placement = o.Placement
+    ai = doc.addObject("Part::Cylinder", f"Bay_{i:02d}_ArmI"); ai.Radius = P["bay_OD"]/2.0; ai.Height = P["bay_L"]; ai.Placement = o.Placement
+    armor = doc.addObject("Part::Cut", f"Bay_{i:02d}_Armor"); armor.Base = ao; armor.Tool = ai
+    grp_bays.addObject(armor); set_density(armor, RHO["KevlarCFRP"]); set_color(armor, P["col_bayarm"])
+
+    bay_dirs.append(App.Vector(vx,vy,0))
+
+# Lazos tangenciales entre bays vecinos
+for i in range(P["n_bays"]):
+    v_i = bay_dirs[i]; v_j = bay_dirs[(i+1)%P["n_bays"]]
+    p_i = App.Vector(v_i.x*Rmods_center, v_i.y*Rmods_center, 0.0)
+    p_j = App.Vector(v_j.x*Rmods_center, v_j.y*Rmods_center, 0.0)
+    st = tube_between(p_i, p_j, max(0.01, P["strut_OD"]/2.0 - 0.02), P["strut_t"], f"BayTie_{i:02d}")
+    grp_truss.addObject(st); set_density(st, RHO["Ti"]); set_color(st, P["col_strut"])
+
+# =========================
+# 5) Propulsión (carcasa hueca + conos) y COPV
+# =========================
+z_prop_mid = - (P["H_total"]/2.0 + P["prop_L"]/2.0)
+
+# Carcasa cilíndrica hueca
+po = doc.addObject("Part::Cylinder","Prop_Cyl_O"); po.Radius = P["prop_D"]/2.0; po.Height = P["prop_L"]; po.Placement.Base = App.Vector(0,0, z_prop_mid - P["prop_L"]/2.0)
+pi = doc.addObject("Part::Cylinder","Prop_Cyl_I"); pi.Radius = max(1e-4, P["prop_D"]/2.0 - P["prop_t"]); pi.Height = P["prop_L"]; pi.Placement.Base = po.Placement.Base
+prop_cyl = doc.addObject("Part::Cut","Prop_Cyl"); prop_cyl.Base = po; prop_cyl.Tool = pi
+grp_prop.addObject(prop_cyl); set_density(prop_cyl, RHO["Al"]); set_color(prop_cyl, P["col_prop"])
+
+# Cono superior (sólido delgado; FEM: idealizar shell si se desea)
+con_top = doc.addObject("Part::Cone","Prop_ConTop")
+con_top.Radius1 = P["D_core"]/2.0; con_top.Radius2 = P["prop_D"]/2.0; con_top.Height = P["cone_L"]
+con_top.Placement.Base = App.Vector(0,0,-P["H_total"]/2.0 - P["cone_L"])
+grp_prop.addObject(con_top); set_density(con_top, RHO["Al"]); set_color(con_top, P["col_prop"])
+
+# Cono inferior hacia tobera
+con_bot = doc.addObject("Part::Cone","Prop_ConBot")
+con_bot.Radius1 = P["prop_D"]/2.0; con_bot.Radius2 = P["nozzle_D"]/2.0; con_bot.Height = P["cone_L"]
+con_bot.Placement.Base = App.Vector(0,0, fqty(po.Placement.Base.z) - P["prop_L"] - P["cone_L"])
+grp_prop.addObject(con_bot); set_density(con_bot, RHO["Al"]); set_color(con_bot, P["col_prop"])
+
+# COPV (4 en cruz)
+Rcopv = P["copv_D"]/2.0
+z_copv0 = z_prop_mid - 0.4
+for k in range(P["copv_n"]):
+    ang = k * 360.0 / P["copv_n"]; vx, vy = math.cos(math.radians(ang)), math.sin(math.radians(ang))
+    c = doc.addObject("Part::Cylinder", f"COPV_{k:02d}_C"); c.Radius = Rcopv; c.Height = P["copv_L"]
+    c.Placement.Rotation = App.Rotation(App.Vector(0,1,0), 90)
+    c.Placement.Base = App.Vector(vx*(P["prop_D"]/2.0 - 0.25), vy*(P["prop_D"]/2.0 - 0.25), z_copv0 - P["copv_L"]/2.0)
+    s1 = doc.addObject("Part::Sphere", f"COPV_{k:02d}_S1"); s1.Radius = Rcopv; s1.Placement.Base = c.Placement.Base.add(App.Vector(0,0,P["copv_L"]))
+    s2 = doc.addObject("Part::Sphere", f"COPV_{k:02d}_S2"); s2.Radius = Rcopv; s2.Placement.Base = c.Placement.Base
+    tank = doc.addObject("Part::MultiFuse", f"COPV_{k:02d}"); tank.Shapes = [c, s1, s2]
+    grp_prop.addObject(tank); set_density(tank, RHO["COPVeq"]); set_color(tank, P["col_copv"])
+
+# =========================
+# 6) Antena parabólica + mástil
+# =========================
+a = P["dish_D"]/2.0; h = P["dish_h"]; Rdish = (a*a + h*h)/(2*h)
+s_out = doc.addObject("Part::Sphere","Dish_O"); s_out.Radius = Rdish
+s_in  = doc.addObject("Part::Sphere","Dish_I"); s_in.Radius = max(1e-4, Rdish - P["dish_t"])
+shell = doc.addObject("Part::Cut","DishShell"); shell.Base = s_out; shell.Tool = s_in
+# Cortar casquete a z >= (R - h)
+cutter = doc.addObject("Part::Box","_DishCut")
+cutter.Length = cutter.Width = 4*Rdish; cutter.Height = 4*Rdish
+cutter.Placement.Base = App.Vector(-2*Rdish,-2*Rdish,-2*Rdish + (Rdish - h))
+dish = doc.addObject("Part::Cut","Dish"); dish.Base = shell; dish.Tool = cutter
+dish.Placement.Base = App.Vector(P["D_core"]/2.0 + P["mast_L"], 0, Hc/2.0 + 0.2)
+grp_comm.addObject(dish); set_density(dish, RHO["CFRP"]); set_color(dish, P["col_dish"])
+
+# Mástil CFRP hueco
+mast = tube_between((P["D_core"]/2.0, 0, Hc/2.0), (P["D_core"]/2.0 + P["mast_L"], 0, Hc/2.0 + 0.2),
+                    P["mast_OD"]/2.0, P["mast_t"], "DishMast")
+grp_comm.addObject(mast); set_density(mast, RHO["CFRP"]); set_color(mast, P["col_boom"])
+
+# =========================
+# 7) Paneles solares, brazos y bisagras
+# =========================
+hinge_R = Rring_o + 0.06
+for i in range(P["n_panels"]):
+    ang = i * 360.0 / P["n_panels"]; rad = math.radians(ang); vx, vy = math.cos(rad), math.sin(rad)
+    # Brazo
+    boom = doc.addObject("Part::Box", f"Boom_{i:02d}")
+    boom.Length = P["boom_L"]; boom.Width=0.10; boom.Height=0.10
+    boom.Placement.Rotation = App.Rotation(App.Vector(0,0,1), ang)
+    boom.Placement.Base = App.Vector(vx*(hinge_R + fqty(boom.Length)/2.0), vy*(hinge_R + fqty(boom.Length)/2.0), -fqty(boom.Height)/2.0)
+    grp_pan.addObject(boom); set_density(boom, RHO["CFRP"]); set_color(boom, P["col_boom"])
+    # Bisagra (perno)
+    pin = cyl_between((vx*hinge_R, vy*hinge_R, 0), (vx*hinge_R, vy*hinge_R, 0.10), 0.014, f"Hinge_{i:02d}")
+    grp_pan.addObject(pin); set_density(pin, RHO["Ti"]); set_color(pin, (0.7,0.7,0.7))
+    # Panel
+    panel = doc.addObject("Part::Box", f"Panel_{i:02d}")
+    panel.Length=P["p_L"]; panel.Width=P["p_W"]; panel.Height=P["p_T"]
+    base_rot = App.Rotation(App.Vector(0,0,1), ang)
+    hinge_axis = App.Vector(-vy, vx, 0)
+    deploy_rot = App.Rotation(hinge_axis, P["hinge_ang"])
+    panel.Placement.Rotation = deploy_rot.multiply(base_rot)
+    base = App.Vector(vx*(hinge_R + P["boom_L"]), vy*(hinge_R + P["boom_L"]), fqty(panel.Height)/2.0)
+    base = base.add(App.Vector(vx*P["p_L"]/2.0, vy*P["p_L"]/2.0, 0))
+    panel.Placement.Base = base
+    grp_pan.addObject(panel); set_density(panel, RHO["CFRP"]); set_color(panel, P["col_panel"])
+
+# =========================
+# 8) Bus de cables blindado (anillo → bays/core/prop)
+# =========================
+r_o = P["bus_OD"]/2.0; t_bus = P["bus_t"]
+# Perímetro segmentado
+nseg = 32
+for i in range(nseg):
+    ang0 = i*(360.0/nseg); ang1 = (i+1)*(360.0/nseg)
+    p0 = (math.cos(math.radians(ang0))*(Rring_o+0.05), math.sin(math.radians(ang0))*(Rring_o+0.05), 0.12)
+    p1 = (math.cos(math.radians(ang1))*(Rring_o+0.05), math.sin(math.radians(ang1))*(Rring_o+0.05), 0.12)
+    seg = tube_between(p0, p1, r_o, t_bus, f"BusSeg_{i:02d}")
+    grp_bus.addObject(seg); set_density(seg, RHO["CFRP"]); set_color(seg, P["col_bus"])
+# Derivaciones a bays
+for i in range(P["n_bays"]):
+    ang = i * 360.0 / P["n_bays"]; vx, vy = math.cos(math.radians(ang)), math.sin(math.radians(ang))
+    p_ring = (vx*(Rring_o+0.05), vy*(Rring_o+0.05), 0.12)
+    p_bay  = (vx*Rmods_center, vy*Rmods_center, 0.12)
+    drop = tube_between(p_ring, p_bay, r_o, t_bus, f"BusDrop_{i:02d}")
+    grp_bus.addObject(drop); set_density(drop, RHO["CFRP"]); set_color(drop, P["col_bus"])
+# Core
+drop_core = tube_between((R+0.1,0,0.12), (0.6,0,0.20), r_o, t_bus, "Bus_Core")
+grp_bus.addObject(drop_core); set_density(drop_core, RHO["CFRP"]); set_color(drop_core, P["col_bus"])
+# Prop
+drop_prop = tube_between((Rring_o+0.05,0,0.12), (0,0,-(P["H_total"]/2.0+0.6)), r_o, t_bus, "Bus_Prop")
+grp_bus.addObject(drop_prop); set_density(drop_prop, RHO["CFRP"]); set_color(drop_prop, P["col_bus"])
+
+# =========================
+# Informe de masas por grupo
+# =========================
+def mass_of(container):
+    total = 0.0
+    for o in container.OutListRecursive:
+        if hasattr(o, "Shape") and hasattr(o, "Density"):
+            try:
+                total += o.Shape.Volume * o.Density
+            except Exception:
+                pass
+    return total
+
+def report():
+    groups = [("Cápsula", grp_core), ("Anillo", grp_ring), ("Truss/Struts", grp_truss),
+              ("Bays", grp_bays), ("Propulsión", grp_prop), ("Paneles", grp_pan),
+              ("Antena/Comms", grp_comm), ("Bus Cables", grp_bus)]
+    App.Console.PrintMessage("\n--- MASAS (t) ---\n")
+    total = 0.0
+    for name, g in groups:
+        m = mass_of(g)/1000.0
+        total += m
+        App.Console.PrintMessage(f"{name:16s}: {m:8.2f} t\n")
+    App.Console.PrintMessage(f"TOTAL seco: {total:8.2f} t (sin propelente ni payload)\n")
+
+doc.recompute()
+report()
+
+# =========================
+# Vista (segura, sin forzar modos no soportados)
+# =========================
+try:
+    if Gui.ActiveDocument:
+        Gui.ActiveDocument.ActiveView.setAxisCross(True)
+        Gui.SendMsgToActiveView("ViewFit")
+        # No tocar DisplayMode del contenedor SAT para evitar ValueError
+        for obj in sat.OutListRecursive:
+            if not hasattr(obj, "ViewObject"):
+                continue
+            try:
+                modes = obj.ViewObject.listDisplayModes()
+            except Exception:
+                continue
+            # Sólo aplicar Shaded si el objeto lo soporta y no es contenedor
+            type_id = getattr(obj, "TypeId", "")
+            if "App::Part" in type_id:
+                continue
+            if "Shaded" in modes:
+                obj.ViewObject.DisplayMode = "Shaded"
+            elif "Flat Lines" in modes:
+                obj.ViewObject.DisplayMode = "Flat Lines"
+            elif "Wireframe" in modes:
+                obj.ViewObject.DisplayMode = "Wireframe"
+except Exception:
+    pass
