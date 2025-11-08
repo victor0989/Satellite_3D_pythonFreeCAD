@@ -1,0 +1,143 @@
+# -*- coding: utf-8 -*-
+# Macro: DoveSat_CoherentSolid — sólido único y coherente para impresión 3D
+# Autor: Copilot para Víctor (Madrid)
+
+import FreeCAD as App, FreeCADGui as Gui, Part
+
+DOC = App.ActiveDocument if App.ActiveDocument else App.newDocument("DoveSat_CoherentSolid")
+
+# -----------------------------
+# Configuración paramétrica
+# -----------------------------
+CFG = {
+    "bus_len": 220.0, "bus_w": 90.0, "bus_h": 80.0,
+    "tel_outer_d": 70.0, "tel_len": 80.0,
+    "cam_w": 40.0, "cam_h": 25.0, "cam_d": 30.0,
+    "rw_d": 28.0, "rw_th": 16.0, "rw_count": 3,
+    "bat_w": 26.0, "bat_h": 18.0, "bat_d": 50.0, "bat_count": 3,
+    "pcb_w": 60.0, "pcb_h": 2.4, "pcb_d": 80.0,
+    "panel_len": 180.0, "panel_w": 70.0, "panel_th": 3.0,
+    "ant_len": 160.0, "ant_d": 3.2, "ant_base_d": 10.0, "ant_base_h": 6.0,
+    "overlap": 1.5  # solape mínimo para garantizar fusión
+}
+
+# -----------------------------
+# Utilidades
+# -----------------------------
+def add_obj(shape, name):
+    o = DOC.addObject("Part::Feature", name)
+    o.Shape = shape
+    return o
+
+def refine(shape):
+    try:
+        return shape.removeSplitter().refine()
+    except Exception:
+        return shape
+
+def fuse_all(shapes):
+    fused = shapes[0]
+    for sh in shapes[1:]:
+        try:
+            fused = fused.fuse(sh)
+        except Exception:
+            pass
+    return refine(fused)
+
+# -----------------------------
+# Subconjuntos
+# -----------------------------
+def build_bus():
+    return Part.makeBox(CFG["bus_w"], CFG["bus_len"], CFG["bus_h"])
+
+def build_telescope():
+    cyl = Part.makeCylinder(CFG["tel_outer_d"]/2.0, CFG["tel_len"]+CFG["overlap"])
+    cyl.translate(App.Vector(CFG["bus_w"]/2.0, CFG["bus_len"], CFG["bus_h"]/2.0 - CFG["tel_outer_d"]/2.0))
+    return cyl
+
+def build_camera():
+    cam = Part.makeBox(CFG["cam_w"], CFG["cam_d"], CFG["cam_h"])
+    cam.translate(App.Vector(CFG["bus_w"]/2.0 - CFG["cam_w"]/2.0,
+                             CFG["bus_len"]/3.0,
+                             CFG["bus_h"] - CFG["cam_h"] - CFG["overlap"]))
+    return cam
+
+def build_reaction_wheels():
+    wheels = []
+    for i in range(CFG["rw_count"]):
+        rw = Part.makeCylinder(CFG["rw_d"]/2.0, CFG["rw_th"]+CFG["overlap"])
+        rw.translate(App.Vector(CFG["bus_w"]/2.0 - CFG["rw_d"]/2.0,
+                                CFG["bus_len"]/2.0,
+                                10 + i*(CFG["rw_th"]+5)))
+        wheels.append(rw)
+    return wheels
+
+def build_batteries():
+    bats = []
+    for i in range(CFG["bat_count"]):
+        b = Part.makeBox(CFG["bat_w"], CFG["bat_d"], CFG["bat_h"])
+        b.translate(App.Vector(10 + i*(CFG["bat_w"]+5),
+                               CFG["bus_len"]-CFG["bat_d"]-CFG["overlap"],
+                               CFG["overlap"]))
+        bats.append(b)
+    return bats
+
+def build_pcb():
+    pcb = Part.makeBox(CFG["pcb_w"], CFG["pcb_d"], CFG["pcb_h"])
+    pcb.translate(App.Vector(CFG["bus_w"]/2.0 - CFG["pcb_w"]/2.0,
+                             CFG["bus_len"]/2.0,
+                             CFG["bus_h"]/2.0))
+    return pcb
+
+def build_panels():
+    panels = []
+    for side in [-1, 1]:
+        p = Part.makeBox(CFG["panel_w"], CFG["panel_len"], CFG["panel_th"])
+        p.translate(App.Vector(
+            CFG["bus_w"]/2.0 + side*(CFG["panel_w"]/2.0 + CFG["overlap"]),
+            CFG["bus_len"]/2.0 - CFG["panel_len"]/2.0,
+            CFG["bus_h"]/2.0
+        ))
+        panels.append(p)
+    return panels
+
+def build_antenna():
+    base = Part.makeCylinder(CFG["ant_base_d"]/2.0, CFG["ant_base_h"]+CFG["overlap"])
+    base.translate(App.Vector(CFG["bus_w"]/2.0 - CFG["ant_base_d"]/2.0,
+                              CFG["bus_len"]/2.0,
+                              CFG["bus_h"]-CFG["ant_base_h"]))
+    rod = Part.makeCylinder(CFG["ant_d"]/2.0, CFG["ant_len"])
+    rod.translate(App.Vector(CFG["bus_w"]/2.0,
+                             CFG["bus_len"]/2.0,
+                             CFG["bus_h"]))
+    return [base, rod]
+
+# -----------------------------
+# Construcción principal
+# -----------------------------
+def build_satellite():
+    for o in list(DOC.Objects):
+        DOC.removeObject(o.Name)
+
+    parts = []
+    parts.append(build_bus())
+    parts.append(build_telescope())
+    parts.append(build_camera())
+    parts += build_reaction_wheels()
+    parts += build_batteries()
+    parts.append(build_pcb())
+    parts += build_panels()
+    parts += build_antenna()
+
+    fused = fuse_all(parts)
+    final = add_obj(fused, "DoveSat_CoherentSolid")
+    DOC.recompute()
+    try:
+        FreeCADGui.ActiveDocument.ActiveView.viewIsometric()
+        FreeCADGui.SendMsgToActiveView("ViewFit")
+    except Exception:
+        pass
+    return final
+
+if __name__ == "__main__":
+    build_satellite()

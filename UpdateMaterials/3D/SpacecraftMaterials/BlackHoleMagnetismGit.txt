@@ -1,0 +1,568 @@
+# -*- coding: utf-8 -*-
+# Macro: HybridPlasmaPropulsion_v2_2
+# FreeCAD 0.19–0.21 compatible. Unidades: mm (densidades en kg/m^3).
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part, math
+
+DOC_NAME = "HybridPlasmaPropulsion_v22"
+
+# -----------------------------
+# PARÁMETROS
+# -----------------------------
+P = {
+    # Cuerpo escalonado [(longitud, diámetro)]
+    "body_sections": [
+        (520.0, 1200.0),
+        (480.0, 1120.0),
+        (420.0, 980.0),
+        (500.0, 1040.0),
+        (600.0, 1150.0),
+        (400.0, 1000.0),
+    ],
+    "body_edge_fillet": 3.0,
+
+    # Chaqueta y canal helicoidal
+    "jacket_z0_offset": 260.0,
+    "jacket_length": 1600.0,
+    "jacket_inner_diam": 1000.0,
+    "jacket_outer_diam": 1150.0,
+    "helix_pitch": 240.0,
+    "helix_turns": 6,
+    "helix_channel_radius": 12.0,
+    "helix_margin_wall": 3.0,
+    "jacket_edge_fillet": 2.0,
+
+    # Boquilla (ion thruster)
+    "nozzle_length": 800.0,
+    "nozzle_precone_ratio": 0.25,
+    "nozzle_main_ratio": 0.55,
+    "nozzle_exit_ratio": 0.20,
+    "nozzle_throat_diam": 360.0,
+    "nozzle_exit_diam": 600.0,
+    "nozzle_edge_fillet": 2.0,
+
+    # Brida y tornillería
+    "flange_thickness": 25.0,
+    "flange_width": 80.0,
+    "flange_pcd": 1050.0,
+    "bolt_count": 12,
+    "bolt_shaft_d": 14.0,
+    "bolt_head_d": 24.0,
+    "bolt_head_h": 8.0,
+    "bolt_len": 45.0,
+    "flange_edge_chamfer": 1.2,
+
+    # Anillos radiativos
+    "rad_ring_count": 4,
+    "rad_ring_outer_diam": 1400.0,
+    "rad_ring_width": 80.0,
+    "rad_ring_thickness": 5.0,
+    "rad_first_offset": 280.0,
+    "rad_spacing": 220.0,
+    "rad_edge_fillet": 1.0,
+
+    # Tanques laterales
+    "tank_diam": 450.0,
+    "tank_height": 1200.0,
+    "tank_clearance": 60.0,
+    "tank_angles_deg": [90.0, 270.0],
+    "tank_z_center_offset": 0.0,
+    "tank_edge_fillet": 2.0,
+
+    # Módulos “cuánticos”
+    "quant_module_diam": 120.0,
+    "quant_module_height": 350.0,
+    "quant_module_count": 6,
+    "quant_radius_offset": 220.0,
+
+    # Conductos térmicos
+    "duct_width": 200.0,
+    "duct_height": 60.0,
+    "duct_length": 900.0,
+    "duct_pairs": 4,
+
+    # Materiales y colores
+    "mat_body":   {"name": "Al6061-T6",     "density": 2700.0,  "color": (0.70, 0.75, 0.80)},
+    "mat_jacket": {"name": "GrapheneComp",  "density": 1600.0,  "color": (0.10, 0.10, 0.10)},
+    "mat_nozzle": {"name": "Ti6Al4V",       "density": 4420.0,  "color": (0.55, 0.55, 0.65)},
+    "mat_rings":  {"name": "CFRP_Rad",      "density": 1650.0,  "color": (0.20, 0.20, 0.25)},
+    "mat_tank":   {"name": "Inconel625",    "density": 8440.0,  "color": (0.45, 0.50, 0.55)},
+    "mat_quant":  {"name": "CuW70",         "density": 17250.0, "color": (0.60, 0.40, 0.20)},
+    "mat_duct":   {"name": "PyroGraphite",  "density": 2200.0,  "color": (0.15, 0.15, 0.15)},
+    "mat_brkt":   {"name": "Ti_Grade5",     "density": 4430.0,  "color": (0.55, 0.55, 0.60)},
+    "mat_bolt":   {"name": "A286",          "density": 7900.0,  "color": (0.35, 0.35, 0.35)},
+
+    # Salidas
+    "make_techdraw": True,
+    "make_step_export": False,
+    "step_path": App.getUserAppDataDir() + "HybridPlasmaPropulsion_v22.step",
+}
+
+# -----------------------------
+# UTILIDADES BASE
+# -----------------------------
+def get_doc():
+    d = App.ActiveDocument
+    if d is None or d.Name != DOC_NAME:
+        d = App.newDocument(DOC_NAME)
+    return d
+
+doc = get_doc()
+
+def set_material(obj, mat):
+    if "Density" not in obj.PropertiesList:
+        obj.addProperty("App::PropertyFloat", "Density", "Material", "kg/m^3")
+    if "MaterialName" not in obj.PropertiesList:
+        obj.addProperty("App::PropertyString", "MaterialName", "Material", "Nombre de material")
+    obj.Density = float(mat["density"])
+    obj.MaterialName = mat["name"]
+    obj.ViewObject.ShapeColor = mat["color"]
+
+def mass_kg(obj):
+    vol_m3 = obj.Shape.Volume * 1e-9
+    dens = obj.Density if "Density" in obj.PropertiesList else 0.0
+    return dens * vol_m3
+
+def refine_shape(shape):
+    try:
+        return shape.removeSplitter()
+    except Exception:
+        return shape
+
+def fuse_objs(objs, name, mat=None, color=None, parent=None):
+    if not objs: return None
+    base = objs[0].Shape
+    for o in objs[1:]:
+        base = base.fuse(o.Shape)
+    base = refine_shape(base)
+    out = doc.addObject("Part::Feature", name)
+    out.Shape = base
+    if mat: set_material(out, mat)
+    if color: out.ViewObject.ShapeColor = color
+    if parent: parent.addObject(out)
+    return out
+
+def add_cyl(name, r, h, z0, mat, parent=None):
+    s = Part.makeCylinder(r, h, App.Vector(0,0,z0))
+    o = doc.addObject("Part::Feature", name)
+    o.Shape = s
+    set_material(o, mat)
+    if parent: parent.addObject(o)
+    return o
+
+def add_cone(name, r1, r2, h, z0, mat, parent=None):
+    s = Part.makeCone(r1, r2, h, App.Vector(0,0,z0))
+    o = doc.addObject("Part::Feature", name)
+    o.Shape = s
+    set_material(o, mat)
+    if parent: parent.addObject(o)
+    return o
+
+def add_ring_solid(name, r_out, r_in, t, z0, mat, parent=None):
+    outer = Part.makeCylinder(r_out, t, App.Vector(0,0,z0))
+    inner = Part.makeCylinder(r_in, t, App.Vector(0,0,z0))
+    s = refine_shape(outer.cut(inner))
+    o = doc.addObject("Part::Feature", name)
+    o.Shape = s
+    set_material(o, mat)
+    if parent: parent.addObject(o)
+    return o
+
+def add_box_centered(name, lx, ly, lz, center_vec, mat, parent=None):
+    s = Part.makeBox(lx, ly, lz)
+    s.translate(center_vec.sub(App.Vector(lx/2.0, ly/2.0, lz/2.0)))
+    o = doc.addObject("Part::Feature", name)
+    o.Shape = s
+    set_material(o, mat)
+    if parent: parent.addObject(o)
+    return o
+
+def add_bolt(name, shaft_d, head_d, head_h, length, base_vec, mat, parent=None):
+    shaft = Part.makeCylinder(shaft_d/2.0, length, App.Vector(0,0,0))
+    head = Part.makeCylinder(head_d/2.0, head_h, App.Vector(0,0,length))
+    sh = refine_shape(shaft.fuse(head))
+    sh.translate(base_vec)
+    o = doc.addObject("Part::Feature", name)
+    o.Shape = sh
+    set_material(o, mat)
+    if parent: parent.addObject(o)
+    return o
+
+def horizontal_circular_edges(shape, z_window=None, z_tol=0.5):
+    edges = []
+    for e in shape.Edges:
+        c = getattr(e, "Curve", None)
+        if c and c.__class__.__name__ == "Circle":
+            ax = c.Axis
+            v = App.Vector(ax.x, ax.y, ax.z)
+            if v.Length == 0: continue
+            vn = v.normalize()
+            if abs(vn.dot(App.Vector(0,0,1))) > 0.99:
+                if z_window:
+                    zc = c.Center.z
+                    if not (z_window[0]-z_tol <= zc <= z_window[1]+z_tol):
+                        continue
+                edges.append(e)
+    return edges
+
+def apply_fillet_on_hz_edges(obj, radius, z_window=None):
+    if radius <= 0: return
+    try:
+        edges = horizontal_circular_edges(obj.Shape, z_window=z_window)
+        if edges:
+            obj.Shape = obj.Shape.makeFillet(radius, edges)
+    except Exception:
+        pass
+
+def apply_chamfer_on_hz_edges(obj, dist, z_window=None):
+    if dist <= 0: return
+    try:
+        edges = horizontal_circular_edges(obj.Shape, z_window=z_window)
+        if edges:
+            obj.Shape = obj.Shape.makeChamfer(dist, edges)
+    except Exception:
+        pass
+
+# -----------------------------
+# HELICOIDE ROBUSTO
+# -----------------------------
+def helix_channel_cut(jacket_obj, r_path, pitch, turns, channel_r, z0, approx_step=40):
+    """
+    Genera un canal helicoidal sólido y lo resta de la chaqueta.
+    Maneja errores comunes de orientación y fallos de BRep.
+    """
+    height = pitch * float(turns)
+    if r_path <= 0 or channel_r <= 0:
+        raise ValueError("r_path o channel_r no pueden ser negativos o cero.")
+
+    # Crear hélice y wire de trayectoria
+    helix = Part.makeHelix(pitch, height, r_path)
+    helix.Placement.Base = App.Vector(0, 0, z0)
+    path_wire = Part.Wire(helix)
+
+    # Perfil circular (perpendicular al eje Z)
+    circ_center = App.Vector(r_path, 0, z0)
+    circ_axis = App.Vector(0, 1, 0)  # orientación perpendicular al eje Z
+    circ_curve = Part.Circle(circ_center, circ_axis, channel_r)
+    circ_edge = Part.Edge(circ_curve)
+    circ_wire = Part.Wire([circ_edge])
+    circ_face = Part.Face(circ_wire)
+
+    # Intento 1: pipe shell sólido
+    try:
+        sweep = circ_face.makePipeShell([path_wire], True, True)
+        sweep = sweep.makeSolid()
+    except Exception:
+        sweep = None
+
+    # Intento 2: makePipe clásico
+    if sweep is None:
+        try:
+            sweep = circ_wire.makePipe(path_wire)
+        except Exception:
+            sweep = None
+
+    # Intento 3: fallback de cilindros discretos
+    if sweep is None:
+        pts = helix.discretize(approx_step * int(turns))
+        cyls = []
+        seg_len = pitch / (approx_step * 1.0)
+        for p in pts:
+            try:
+                c = Part.makeCylinder(channel_r, seg_len, App.Vector(p.x, p.y, p.z))
+                cyls.append(c)
+            except Exception:
+                pass
+        if cyls:
+            sweep = cyls[0]
+            for c in cyls[1:]:
+                try:
+                    sweep = sweep.fuse(c)
+                except Exception:
+                    pass
+        sweep = refine_shape(sweep)
+
+    # Restar el canal del jacket
+    try:
+        jacket_obj.Shape = refine_shape(jacket_obj.Shape.cut(sweep))
+    except Exception as e:
+        App.Console.PrintError(f"[helix_channel_cut] Error al restar canal: {e}\n")
+
+    return sweep
+
+
+def make_part_container(name):
+    part = doc.addObject("App::Part", name)
+    return part
+
+# -----------------------------
+# BOM Y TECHDRAW
+# -----------------------------
+def make_bom_sheet(components):
+    sh = doc.addObject("Spreadsheet::Sheet", "BOM")
+    headers = ["Item","Nombre","Rol","Material","Densidad (kg/m^3)","Volumen (mm^3)","Masa (kg)"]
+    for c,h in enumerate(headers, start=1):
+        sh.set(chr(64+c)+"1", h)
+    total = 0.0
+    for i,(o,role) in enumerate(components, start=2):
+        m = mass_kg(o)
+        total += m
+        sh.set("A"+str(i), str(i-1))
+        sh.set("B"+str(i), o.Name)
+        sh.set("C"+str(i), role)
+        sh.set("D"+str(i), getattr(o,"MaterialName","N/A"))
+        sh.set("E"+str(i), f"{getattr(o,'Density',0.0):.1f}")
+        sh.set("F"+str(i), f"{o.Shape.Volume:.0f}")
+        sh.set("G"+str(i), f"{m:.3f}")
+    sh.set("A"+str(len(components)+3), "Masa total (kg)")
+    sh.set("B"+str(len(components)+3), f"{total:.3f}")
+    return sh
+
+def make_techdraw(assembly_obj, bom_sheet_obj):
+    try:
+        import TechDraw
+        page = doc.addObject("TechDraw::DrawPage","Page")
+        tmpl = doc.addObject("TechDraw::DrawSVGTemplate", "Template")
+        tmpl.Template = App.getResourceDir() + "Mod/TechDraw/Templates/A3_Landscape.svg"
+        page.Template = tmpl
+
+        views = [
+            (App.Vector(1,1,1),"ISO"),
+            (App.Vector(0,0,1),"TOP"),
+            (App.Vector(1,0,0),"RIGHT"),
+            (App.Vector(0,1,0),"FRONT")
+        ]
+        for vec,name in views:
+            v = doc.addObject("TechDraw::DrawViewPart","View_"+name)
+            v.Source = [assembly_obj]
+            v.Direction = vec
+            page.addView(v)
+
+        vs = doc.addObject("TechDraw::DrawViewSpreadsheet","BOM_View")
+        vs.Source = bom_sheet_obj
+        page.addView(vs)
+        return page
+    except Exception:
+        return None
+
+# -----------------------------
+# CONSTRUCTORES MODULARES
+# -----------------------------
+def build_body(parent):
+    z = 0.0
+    segs = []
+    for i,(L,D) in enumerate(P["body_sections"], start=1):
+        seg = add_cyl(f"BODY_S{i}", D/2.0, L, z, P["mat_body"], parent=parent)
+        segs.append(seg)
+        z += L
+    body = fuse_objs(segs, "BODY", P["mat_body"], parent=parent)
+    if P["body_edge_fillet"] > 0 and body:
+        apply_fillet_on_hz_edges(body, P["body_edge_fillet"])
+    return body, z
+
+def build_jacket(parent):
+    j_z0 = max(0.0, P["jacket_z0_offset"])
+    j_in = P["jacket_inner_diam"]/2.0
+    j_out = P["jacket_outer_diam"]/2.0
+    j_len = P["jacket_length"]
+
+    outer = Part.makeCylinder(j_out, j_len, App.Vector(0,0,j_z0))
+    inner = Part.makeCylinder(j_in, j_len, App.Vector(0,0,j_z0))
+    shape = refine_shape(outer.cut(inner))
+    jacket = doc.addObject("Part::Feature","JACKET")
+    jacket.Shape = shape
+    set_material(jacket, P["mat_jacket"])
+    parent.addObject(jacket)
+
+    r_path = j_out - (P["helix_channel_radius"] + P["helix_margin_wall"])
+    tool = helix_channel_cut(jacket, r_path, P["helix_pitch"], P["helix_turns"], P["helix_channel_radius"], j_z0)
+
+    if P["jacket_edge_fillet"] > 0:
+        apply_fillet_on_hz_edges(jacket, P["jacket_edge_fillet"], z_window=(j_z0, j_z0 + j_len))
+
+    tool_obj = doc.addObject("Part::Feature","JACKET_ChannelTool")
+    tool_obj.Shape = tool
+    tool_obj.ViewObject.ShapeColor = (0.9,0.2,0.2)
+    tool_obj.ViewObject.Transparency = 70
+    parent.addObject(tool_obj)
+
+    return jacket, j_z0, j_len, j_in, j_out
+
+def build_nozzle(parent, body_end_z, j_in):
+    L_total = P["nozzle_length"]
+    L_pre = L_total * P["nozzle_precone_ratio"]
+    L_main = L_total * P["nozzle_main_ratio"]
+    L_exit = L_total * P["nozzle_exit_ratio"]
+    z0 = body_end_z
+
+    r_inlet = j_in*0.9
+    r_throat = P["nozzle_throat_diam"]/2.0
+    r_exit = P["nozzle_exit_diam"]/2.0
+
+    pre = add_cone("NOZ_Pre", r_inlet, r_throat, L_pre, z0, P["mat_nozzle"], parent=parent)
+    main = add_cone("NOZ_Main", r_throat, r_exit, L_main, z0+L_pre, P["mat_nozzle"], parent=parent)
+    ext = add_cyl("NOZ_Exit", r_exit, L_exit, z0+L_pre+L_main, P["mat_nozzle"], parent=parent)
+    tip = add_ring_solid("NOZ_TipRing", r_exit+10.0, r_exit-10.0, 6.0, z0+L_total-6.0, P["mat_nozzle"], parent=parent)
+
+    noz = fuse_objs([pre, main, ext, tip], "NOZZLE", P["mat_nozzle"], parent=parent)
+
+    if P["nozzle_edge_fillet"] > 0 and noz:
+        z1 = z0 + L_pre
+        z2 = z0 + L_pre + L_main
+        apply_fillet_on_hz_edges(noz, P["nozzle_edge_fillet"], z_window=(z0-1, z0+1))
+        apply_fillet_on_hz_edges(noz, P["nozzle_edge_fillet"], z_window=(z1-1, z1+1))
+        apply_fillet_on_hz_edges(noz, P["nozzle_edge_fillet"], z_window=(z2-1, z2+1))
+    return noz, z0
+
+def build_flange_and_bolts(parent, nozzle_z0):
+    fl_z = nozzle_z0 - P["flange_thickness"]
+    r_out_fl = (P["flange_pcd"]/2.0) + P["flange_width"]
+    r_in_fl  = (P["flange_pcd"]/2.0) - (P["flange_width"]*0.6)
+    flange = add_ring_solid("FLANGE_Main", r_out_fl, r_in_fl, P["flange_thickness"], fl_z, P["mat_brkt"], parent=parent)
+    if P["flange_edge_chamfer"] > 0:
+        apply_chamfer_on_hz_edges(flange, P["flange_edge_chamfer"], z_window=(fl_z-0.5, fl_z+P["flange_thickness"]+0.5))
+
+    bolts = []
+    for k in range(P["bolt_count"]):
+        ang = 2.0*math.pi*k/P["bolt_count"]
+        x = (P["flange_pcd"]/2.0) * math.cos(ang)
+        y = (P["flange_pcd"]/2.0) * math.sin(ang)
+        b = add_bolt(f"BOLT_{k+1}", P["bolt_shaft_d"], P["bolt_head_d"], P["bolt_head_h"], P["bolt_len"],
+                     App.Vector(x, y, fl_z), P["mat_bolt"], parent=parent)
+        bolts.append(b)
+    return flange, bolts
+
+def build_radiator_rings(parent, j_z0, j_len):
+    rings = []
+    for i in range(P["rad_ring_count"]):
+        zpos = j_z0 + P["rad_first_offset"] + i*P["rad_spacing"]
+        r_out = P["rad_ring_outer_diam"]/2.0
+        r_in  = r_out - P["rad_ring_width"]
+        ring = add_ring_solid(f"RAD_{i+1}", r_out, r_in, P["rad_ring_thickness"], zpos, P["mat_rings"], parent=parent)
+        if P["rad_edge_fillet"] > 0:
+            apply_fillet_on_hz_edges(ring, P["rad_edge_fillet"])
+        rings.append(ring)
+    return rings
+
+def build_tanks(parent, j_z0, j_len, j_out):
+    tank_r = P["tank_diam"]/2.0
+    axis_z = j_z0 + (j_len/2.0) - (P["tank_height"]/2.0) + P.get("tank_z_center_offset", 0.0)
+    offset = j_out + tank_r + P["tank_clearance"]
+
+    tanks, brackets = [], []
+    for idx,ang_deg in enumerate(P["tank_angles_deg"], start=1):
+        ang = math.radians(ang_deg)
+        x = offset * math.cos(ang)
+        y = offset * math.sin(ang)
+        t = add_cyl(f"TANK_{idx}", tank_r, P["tank_height"], axis_z, P["mat_tank"], parent=parent)
+        t.Placement.Base = App.Vector(x,y,axis_z)
+        if P["tank_edge_fillet"] > 0:
+            apply_fillet_on_hz_edges(t, P["tank_edge_fillet"], z_window=(axis_z-1, axis_z + P["tank_height"]+1))
+        tanks.append(t)
+        # Ménsulas
+        arm_len = 80.0; arm_w = 200.0; arm_t = 12.0
+        base_x = (j_out + 40.0) * math.cos(ang)
+        base_y = (j_out + 40.0) * math.sin(ang)
+        b1 = add_box_centered(f"TANK_BRKT1_{idx}", arm_len, arm_w, arm_t,
+                              App.Vector(base_x, base_y, axis_z + P["tank_height"]*0.25), P["mat_brkt"], parent=parent)
+        b2 = add_box_centered(f"TANK_BRKT2_{idx}", arm_len, arm_w, arm_t,
+                              App.Vector(base_x, base_y, axis_z + P["tank_height"]*0.75), P["mat_brkt"], parent=parent)
+        brackets += [b1,b2]
+    return tanks, brackets
+
+def build_quant_modules(parent, j_z0, j_len, j_out):
+    qm_r = P["quant_module_diam"]/2.0
+    qm_z = j_z0 + j_len/2.0 - P["quant_module_height"]/2.0
+    qm_radius = j_out + P["quant_radius_offset"]
+    qms = []
+    for i in range(P["quant_module_count"]):
+        ang = 2.0*math.pi * i/P["quant_module_count"]
+        x = qm_radius * math.cos(ang)
+        y = qm_radius * math.sin(ang)
+        q = add_cyl(f"QMOD_{i+1}", qm_r, P["quant_module_height"], qm_z, P["mat_quant"], parent=parent)
+        q.Placement.Base = App.Vector(x,y,qm_z)
+        qms.append(q)
+    return qms
+
+def build_thermal_ducts(parent, j_z0, j_len, j_out):
+    ducts = []
+    for i in range(P["duct_pairs"]):
+        frac = (i+1)/(P["duct_pairs"]+1.0)
+        zpos = j_z0 + frac*j_len
+        L = P["duct_length"]; w = P["duct_width"]; h = P["duct_height"]
+        dP = add_box_centered(f"DUCT_{i+1}_P", L, w, h,
+                              App.Vector(0, j_out + w/2.0 + 10.0, zpos), P["mat_duct"], parent=parent)
+        dN = add_box_centered(f"DUCT_{i+1}_N", L, w, h,
+                              App.Vector(0, -(j_out + w/2.0 + 10.0), zpos), P["mat_duct"], parent=parent)
+        ducts += [dP, dN]
+    return ducts
+
+# -----------------------------
+# ENSAMBLE Y EJECUCIÓN
+# -----------------------------
+def main():
+    # Part containers
+    grp_body   = make_part_container("PART_Body")
+    grp_jacket = make_part_container("PART_Jacket")
+    grp_nozzle = make_part_container("PART_Nozzle")
+    grp_rads   = make_part_container("PART_Radiators")
+    grp_tanks  = make_part_container("PART_Tanks")
+    grp_quant  = make_part_container("PART_Quantum")
+    grp_ducts  = make_part_container("PART_Ducts")
+    grp_fast   = make_part_container("PART_Fasteners")
+
+    # Construcción
+    body, body_end_z = build_body(grp_body)
+    jacket, j_z0, j_len, j_in, j_out = build_jacket(grp_jacket)
+    nozzle, noz_z0 = build_nozzle(grp_nozzle, body_end_z, j_in)
+    flange, bolts = build_flange_and_bolts(grp_fast, noz_z0)
+    rings = build_radiator_rings(grp_rads, j_z0, j_len)
+    tanks, brackets = build_tanks(grp_tanks, j_z0, j_len, j_out)
+    qmods = build_quant_modules(grp_quant, j_z0, j_len, j_out)
+    ducts = build_thermal_ducts(grp_ducts, j_z0, j_len, j_out)
+
+    # Ensamble para vistas/export
+    all_objs = [body, jacket, nozzle, flange] + bolts + rings + tanks + brackets + qmods + ducts
+    assembly = fuse_objs([o for o in all_objs if o], "ASSEMBLY", mat=P["mat_body"])
+    assembly.ViewObject.ShapeColor = (0.78,0.78,0.82)
+
+    # BOM
+    bom_rows = []
+    def add_bom(lst, role):
+        for o in lst:
+            if o: bom_rows.append((o, role))
+    add_bom([body], "Cuerpo")
+    add_bom([jacket], "Chaqueta de refrigeración")
+    add_bom([nozzle], "Boquilla ion thruster")
+    add_bom([flange], "Brida principal")
+    add_bom(bolts, "Tornillería brida")
+    add_bom(rings, "Anillo radiativo")
+    add_bom(tanks, "Tanque propelente")
+    add_bom(brackets, "Soporte tanque")
+    add_bom(qmods, "Módulo cuántico")
+    add_bom(ducts, "Conducto térmico")
+
+    bom_sheet = make_bom_sheet(bom_rows)
+
+    # TechDraw
+    if P["make_techdraw"]:
+        make_techdraw(assembly, bom_sheet)
+
+    # STEP
+    if P["make_step_export"]:
+        try:
+            Part.export([assembly], P["step_path"])
+            App.Console.PrintMessage(f"STEP exportado en: {P['step_path']}\n")
+        except Exception:
+            App.Console.PrintError("No se pudo exportar STEP.\n")
+
+    doc.recompute()
+    try:
+        Gui.ActiveDocument.ActiveView.viewIsometric()
+        Gui.SendMsgToActiveView("ViewFit")
+    except Exception:
+        pass
+
+# Ejecutar
+main()

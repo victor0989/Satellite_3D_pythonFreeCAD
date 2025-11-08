@@ -1,0 +1,254 @@
+# -*- coding: utf-8 -*-
+import FreeCAD as App, FreeCADGui as Gui, Part, math
+
+DOC_NAME = "Printable_Hybrid_Probe"
+doc = App.ActiveDocument
+doc = App.newDocument(DOC_NAME) if not doc or doc.Label != DOC_NAME else doc
+App.ActiveDocument = doc
+
+# -------------------------------
+# Parámetros escala realista
+# -------------------------------
+P = {
+    # Fuselaje
+    "nose_len": 1200.0, "nose_base_d": 1600.0, "nose_cap_d": 600.0,
+    "mid_len": 3500.0, "mid_d": 2400.0,
+    "rear_len": 2500.0, "rear_d": 2800.0,
+    "hull_fillet_r": 25.0,
+
+    # Blindajes
+    "front_tps_r": 2200.0, "front_tps_t": 300.0, "front_tps_bevel": 120.0, "front_tps_gap": 150.0,
+    "rear_tps_r": 1800.0, "rear_tps_t": 250.0, "rear_tps_bevel": 100.0, "rear_tps_gap": 100.0,
+    "parker_extra_t": 220.0, "parker_offset": 500.0,
+    "whipple_layers_n": 4, "whipple_gap": 350.0, "whipple_t": 50.0,
+
+    # Propulsión
+    "reactor_d": 2000.0, "reactor_l": 2800.0, "reactor_cx": 4800.0,
+    "nozzle_throat_d": 700.0, "nozzle_exit_d": 2800.0,
+    "nozzle_l": 2600.0, "nozzle_cx": 6000.0, "nozzle_fillet_r": 100.0,
+
+    # Fluidos
+    "water_tank_d": 2200.0, "water_tank_l": 3200.0, "water_tank_cx": 2800.0,
+    "electrolyzer_l": 800.0, "electrolyzer_w": 500.0, "electrolyzer_h": 400.0, "electrolyzer_cx": 3600.0,
+    "h2_vessel_d": 600.0, "h2_vessel_l": 1600.0, "h2_cx": 4200.0, "h2_cy": -800.0,
+    "o2_vessel_d": 600.0, "o2_vessel_l": 1600.0, "o2_cx": 4200.0, "o2_cy": 800.0,
+
+    # Paneles solares
+    "solar_l": 4000.0, "solar_w": 100.0, "solar_h": 1600.0,
+    "solar_cx": 2600.0, "solar_cy": 2800.0, "solar_cz": 0.0,
+
+    # Radiadores
+    "rad_fin_l": 2200.0, "rad_fin_w": 60.0, "rad_fin_h": 800.0,
+    "rad_fin_cx": 4800.0, "rad_fin_cy": 0.0, "rad_fin_cz": 1200.0,
+
+    # Propulsión híbrida
+    "ion_d1": 400.0, "ion_d2": 1200.0, "ion_l": 1600.0, "ion_cx": 8200.0,
+    "aux_d1": 300.0, "aux_d2": 800.0, "aux_l": 1000.0, "aux_cx": 7800.0, "aux_cy": 1000.0,
+
+    # Aviónica
+    "dry_l": 1000.0, "dry_w": 700.0, "dry_h": 500.0, "dry_cx": 3200.0, "dry_cy": -1200.0, "dry_cz": -300.0,
+    "wet_l": 1000.0, "wet_w": 700.0, "wet_h": 500.0, "wet_cx": 3200.0, "wet_cy": 1200.0, "wet_cz": -300.0,
+
+    # RTG opcional
+    "rtg_enable": True,
+    "rtg_body_d": 1200.0, "rtg_body_len": 2200.0,
+    "rtg_arm_len": 2000.0, "rtg_arm_d": 400.0, "rtg_box_l": 1800.0, "rtg_box_w": 1000.0, "rtg_box_t": 500.0,
+    "rtg_mount_cx": 2000.0, "rtg_offset_z": 1400.0,
+
+    "make_unified_solid": True
+}
+
+# -------------------------------
+# Utilidades
+# -------------------------------
+X_AXIS = App.Vector(1,0,0); Y_AXIS = App.Vector(0,1,0); Z_AXIS = App.Vector(0,0,1)
+ROT_TO_X = App.Rotation(Y_AXIS,90)
+
+def place_x_aligned(s,L,cx=0,cy=0,cz=0):
+    s.Placement = App.Placement(App.Vector(cx-L/2,cy,cz), ROT_TO_X)
+
+def add_obj(s,n,c=(0.7,0.7,0.72)):
+    o=doc.addObject("Part::Feature",n); o.Shape=s; o.ViewObject.ShapeColor=c; return o
+
+def cyl_x(d,L,cx=0,cy=0,cz=0):
+    s=Part.makeCylinder(d/2,L); place_x_aligned(s,L,cx,cy,cz); return s
+
+def cone_x(d1,d2,L,cx=0,cy=0,cz=0):
+    s=Part.makeCone(d1/2,d2/2,L); place_x_aligned(s,L,cx,cy,cz); return s
+
+def box_at(l,w,h,x,y,z):
+    b=Part.makeBox(l,w,h); b.translate(App.Vector(x,y,z)); return b
+
+def fuse_all(shapes):
+    if not shapes: return None
+    fused=shapes[0]
+    for s in shapes[1:]: fused=fused.fuse(s)
+    return fused
+
+# -------------------------------
+# Construcción de subsistemas
+# -------------------------------
+# Fuselaje
+nose = cone_x(P["nose_base_d"], P["nose_cap_d"], P["nose_len"], cx=0)
+mid  = cyl_x(P["mid_d"], P["mid_len"], cx=P["nose_len"])
+rear = cyl_x(P["rear_d"], P["rear_len"], cx=P["nose_len"]+P["mid_len"])
+hull_obj = add_obj(fuse_all([nose,mid,rear]), "Hull_Solid", (0.6,0.6,0.65))
+
+# Blindajes
+front_tps = cyl_x(P["front_tps_r"], P["front_tps_t"], cx=-P["front_tps_t"]-P["front_tps_gap"])
+front_tps_obj = add_obj(front_tps, "Front_TPS", (0.1,0.1,0.12))
+parker = cyl_x(P["front_tps_r"]*1.3, P["parker_extra_t"], cx=-P["front_tps_t"]-P["front_tps_gap"]-P["parker_offset"])
+parker_obj = add_obj(parker, "Parker_Shield", (0.15,0.15,0.20))
+whipple_objs=[]
+for i in range(P["whipple_layers_n"]):
+    layer=cyl_x(P["front_tps_r"]+i*P["whipple_gap"], P["whipple_t"], cx=-P["front_tps_t"]-P["front_tps_gap"]-P["parker_offset"]-200-i*P["whipple_gap"])
+    whipple_objs.append(add_obj(layer,f"Whipple_{i+1}",(0.3,0.3,0.32)))
+
+# Propulsión
+nozzle = cone_x(P["nozzle_throat_d"], P["nozzle_exit_d"], P["nozzle_l"], cx=P["nozzle_cx"])
+nozzle_obj = add_obj(nozzle, "Main_Nozzle", (0.68,0.70,0.72))
+
+reactor = cyl_x(P["reactor_d"], P["reactor_l"], cx=P["reactor_cx"])
+reactor_obj = add_obj(reactor, "Reactor_Core", (0.54,0.56,0.60))
+
+# Ion thruster y auxiliar (propulsión híbrida)
+ion_thr = cone_x(P["ion_d1"], P["ion_d2"], P["ion_l"], cx=P["ion_cx"])
+ion_thr_obj = add_obj(ion_thr, "Ion_Thruster", (0.40,0.40,0.90))
+
+aux_thr = cone_x(P["aux_d1"], P["aux_d2"], P["aux_l"], cx=P["aux_cx"], cy=P["aux_cy"])
+aux_thr_obj = add_obj(aux_thr, "Aux_Thruster", (0.60,0.60,0.70))
+
+# Radiador desplegable (térmico)
+rad_fin = box_at(P["rad_fin_l"], P["rad_fin_w"], P["rad_fin_h"], P["rad_fin_cx"], P["rad_fin_cy"], P["rad_fin_cz"])
+rad_fin_obj = add_obj(rad_fin, "Deployable_Radiator", (0.85,0.85,0.90))
+
+# Paneles solares (pétalos)
+solar_left  = box_at(P["solar_l"], P["solar_w"], P["solar_h"], P["solar_cx"], -P["solar_cy"], P["solar_cz"])
+solar_right = box_at(P["solar_l"], P["solar_w"], P["solar_h"], P["solar_cx"],  P["solar_cy"], P["solar_cz"])
+solar_L_obj = add_obj(solar_left,  "Solar_Panel_Left",  (0.10,0.10,0.30))
+solar_R_obj = add_obj(solar_right, "Solar_Panel_Right", (0.10,0.10,0.30))
+
+# Aviónica (pods seco y húmedo)
+dry_pod = box_at(P["dry_l"], P["dry_w"], P["dry_h"], P["dry_cx"], P["dry_cy"], P["dry_cz"])
+wet_pod = box_at(P["wet_l"], P["wet_w"], P["wet_h"], P["wet_cx"], P["wet_cy"], P["wet_cz"])
+dry_pod_obj = add_obj(dry_pod, "Dry_Avionics_Pod", (0.50,0.50,0.55))
+wet_pod_obj = add_obj(wet_pod, "Wet_Avionics_Pod", (0.50,0.70,0.90))
+
+# Fluidos (tanque de agua, electrolizador, H2/O2)
+water_tank = cyl_x(P["water_tank_d"], P["water_tank_l"], cx=P["water_tank_cx"])
+water_tank_obj = add_obj(water_tank, "Water_Tank", (0.20,0.50,0.80))
+
+electrolyzer = box_at(P["electrolyzer_l"], P["electrolyzer_w"], P["electrolyzer_h"],
+                      P["electrolyzer_cx"], -P["electrolyzer_w"]/2.0, -P["electrolyzer_h"]/2.0)
+electrolyzer_obj = add_obj(electrolyzer, "Electrolyzer_Stack", (0.80,0.80,0.90))
+
+h2_vessel = cyl_x(P["h2_vessel_d"], P["h2_vessel_l"], cx=P["h2_cx"], cy=P["h2_cy"])
+o2_vessel = cyl_x(P["o2_vessel_d"], P["o2_vessel_l"], cx=P["o2_cx"], cy=P["o2_cy"])
+h2_vessel_obj = add_obj(h2_vessel, "H2_Vessel_350bar", (0.60,0.90,0.90))
+o2_vessel_obj = add_obj(o2_vessel, "O2_Vessel_350bar", (0.90,0.60,0.60))
+
+# Baffles internos del tanque (anti-slosh)
+baffles = []
+baffle_count = 4
+for i in range(baffle_count):
+    offset = -P["water_tank_l"]/2.0 + (i+1) * (P["water_tank_l"]/(baffle_count+1))
+    b = Part.makeCylinder(P["water_tank_d"]/2.2, 12.0)
+    b.Placement = App.Placement(App.Vector(P["water_tank_cx"] + offset, 0, 0), ROT_TO_X)
+    baffles.append(b)
+baffles_union = fuse_all(baffles)
+baffles_obj = add_obj(baffles_union, "Water_Baffles", (0.25,0.45,0.75))
+
+# Radiadores laterales reforzados (reutiliza los anteriores si existen; si no, crea unos básicos)
+# Si tu macro original ya tenía 'rad_obj', puedes omitir este bloque.
+rad_panels = []
+for i in range(6):
+    z = -400 + i*160
+    r = Part.makeBox(1100.0, 28.0, 80.0)
+    r.Placement = App.Placement(App.Vector(P["nose_len"] + P["mid_len"] + 80.0, -P["rear_d"]/2.0 - 90.0, z), App.Rotation())
+    rad_panels.append(r)
+rad_union = fuse_all(rad_panels)
+rad_obj = add_obj(rad_union, "Radiator_Panels", (0.62,0.64,0.68))
+
+# Blindajes traseros (si aún no estaban)
+rear_disc  = Part.makeCylinder(P["rear_tps_r"], P["rear_tps_t"])
+rear_bevel = Part.makeCone(P["rear_tps_r"], P["rear_tps_r"] - P["rear_tps_bevel"], P["rear_tps_bevel"])
+rear_tps   = rear_disc.fuse(rear_bevel)
+rear_x = P["nose_len"] + P["mid_len"] + P["rear_len"] + P["rear_tps_gap"]
+rear_tps.Placement = App.Placement(App.Vector(rear_x, 0, 0), ROT_TO_X)
+rear_tps_obj = add_obj(rear_tps, "Rear_TPS", (0.18,0.18,0.20))
+
+# Anillo guardián trasero (si aún no estaba)
+ring_outer = Part.makeCylinder(P["rear_tps_r"]+200.0, 180.0)
+ring_inner = Part.makeCylinder(P["rear_tps_r"]+200.0-140.0, 180.2)
+ring = ring_outer.cut(ring_inner)
+ring.Placement = App.Placement(App.Vector(P["nose_len"] + P["mid_len"] + P["rear_len"] - 90.0, 0, 0), ROT_TO_X)
+ring_obj = add_obj(ring, "Rear_Guard_Ring", (0.30,0.32,0.35))
+
+# Parker shield y Whipple (si aún no estaban)
+front_tps = cyl_x(P["front_tps_r"], P["front_tps_t"], cx=-P["front_tps_t"]-P["front_tps_gap"])
+front_tps_obj = add_obj(front_tps, "Front_TPS", (0.10,0.10,0.12))
+
+parker = cyl_x(P["front_tps_r"]*1.3, P["parker_extra_t"], cx=-P["front_tps_t"]-P["front_tps_gap"]-P["parker_offset"])
+parker_obj = add_obj(parker, "Parker_Shield", (0.15,0.15,0.20))
+
+whipple_objs = []
+for i in range(P["whipple_layers_n"]):
+    layer = cyl_x(P["front_tps_r"] + i*P["whipple_gap"], P["whipple_t"],
+                  cx=-P["front_tps_t"] - P["front_tps_gap"] - P["parker_offset"] - 200 - i*P["whipple_gap"])
+    whipple_objs.append(add_obj(layer, f"Whipple_{i+1}", (0.3,0.3,0.32)))
+
+# RTG opcional (brazo + caja + cuerpo)
+rtg_objs = []
+if P.get("rtg_enable", False):
+    arm = cyl_x(P["rtg_arm_d"], P["rtg_arm_len"], cx=P["rtg_mount_cx"], cz=-P["rtg_offset_z"])
+    arm_obj = add_obj(arm, "RTG_Arm", (0.70,0.70,0.72)); rtg_objs.append(arm_obj)
+
+    manifold_box = box_at(P["rtg_box_l"], P["rtg_box_w"], P["rtg_box_t"],
+                          P["rtg_mount_cx"] + P["rtg_arm_len"]/2.0 - P["rtg_box_l"]/2.0,
+                          -P["rtg_box_w"]/2.0, -P["rtg_offset_z"] - P["rtg_box_t"]/2.0)
+    box_obj = add_obj(manifold_box, "RTG_Manifold", (0.40,0.40,0.42)); rtg_objs.append(box_obj)
+
+    rtg_cx = P["rtg_mount_cx"] + P["rtg_arm_len"]/2.0 + P["rtg_body_len"]/2.0
+    shell = cyl_x(P["rtg_body_d"], P["rtg_body_len"], cx=rtg_cx, cz=-P["rtg_offset_z"])
+    shell_obj = add_obj(shell, "RTG_Shell", (0.75,0.73,0.70)); rtg_objs.append(shell_obj)
+
+# -------------------------------
+# Unificación progresiva (anti-kernel)
+# -------------------------------
+# Grupos por subsistema
+shielding_union = fuse_all(
+    [front_tps_obj.Shape, parker_obj.Shape] +
+    [w.Shape for w in whipple_objs] +
+    [rear_tps_obj.Shape, ring_obj.Shape]
+)
+
+structure_union = hull_obj.Shape  # si tienes bandas/truss, súmalos aquí
+
+fluids_union = fuse_all([water_tank_obj.Shape, baffles_obj.Shape, electrolyzer_obj.Shape,
+                         h2_vessel_obj.Shape, o2_vessel_obj.Shape])
+
+propulsion_union = fuse_all([reactor_obj.Shape, nozzle_obj.Shape, ion_thr_obj.Shape, aux_thr_obj.Shape])
+
+thermal_union = fuse_all([rad_obj.Shape, rad_fin_obj.Shape])
+
+power_union = fuse_all([solar_L_obj.Shape, solar_R_obj.Shape])
+
+avionics_union = fuse_all([dry_pod_obj.Shape, wet_pod_obj.Shape])
+
+rtg_union = fuse_all([o.Shape for o in rtg_objs]) if rtg_objs else None
+
+# Fusión final ordenada
+final_parts = [structure_union, shielding_union, fluids_union,
+               propulsion_union, thermal_union, power_union, avionics_union]
+if rtg_union: final_parts.append(rtg_union)
+
+final = fuse_all(final_parts)
+final_obj = add_obj(final, "Unified_Printable_Hybrid_Probe", (0.72,0.72,0.74))
+
+# Vista ortográfica
+try:
+    Gui.ActiveDocument.ActiveView.setCameraType("Orthographic")
+except:
+    pass
+
+doc.recompute()

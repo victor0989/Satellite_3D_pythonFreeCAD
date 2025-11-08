@@ -1,0 +1,390 @@
+# -*- coding: utf-8 -*-
+# Macro: StarSat Industrial Sci-Fi CAD Metal-Ready (3D Printing, Robust)
+# Autor: Copilot para Víctor (Madrid)
+
+import FreeCAD as App
+import Part
+import math
+import random
+
+doc = App.newDocument("StarSat_Industrial_Print_Robust")
+
+P = dict(
+    mode="print",
+    chamfer_val=0.6,
+    fillet_val=1.0,       # bajado para evitar fallos
+    tolerance=0.05,
+
+    bus_w=90.0,
+    bus_d=80.0,
+    bus_h=110.0,
+    hull_scale=1.18,
+    prow_len=80.0,
+    stern_len=70.0,
+
+    armor_gap=1.2,
+    armor_thk=4.0,
+
+    fin_span=130.0,
+    fin_t=3.0,
+
+    engine_count=3,
+    engine_len=85.0,
+    engine_r=15.0,
+    engine_ring_t=3.0,
+
+    panel_len=190.0,
+    panel_w=58.0,
+    panel_t=2.6,
+    panel_segments=4,
+    panel_deploy_deg=25.0,
+
+    panel_ring_count=16,
+    panel_tile_w=14.0,
+    panel_tile_h=22.0,
+    panel_tile_t=2.0,
+    panel_belt_offset=6.0,
+
+    tank_r=14.0,
+    tank_h=52.0,
+    tank_count=4,
+    manifold_r=8.0,
+    pipe_r=3.2,
+    node_r=4.0,
+
+    radiator_len=130.0,
+    radiator_w=26.0,
+    radiator_t=2.2,
+
+    enable_armor=True,
+    enable_wings=True,
+    enable_panel_belt=True,
+    enable_tanks=True,
+    enable_pipes=True,
+    enable_dish=True,
+    enable_engines=True,
+    enable_radiators=True,
+
+    col_hull=(0.75, 0.76, 0.78),
+    col_panel=(0.06, 0.08, 0.20),
+    col_metal=(0.70, 0.70, 0.72),
+    col_glow=(0.15, 0.4, 1.0),
+    col_detail=(0.50, 0.50, 0.50),
+    col_tank=(0.30, 0.45, 0.60)
+)
+
+random.seed(42)
+
+# --------------------------
+# Utilidades
+# --------------------------
+def add_obj(shape, name, color=None):
+    obj = doc.addObject("Part::Feature", name)
+    obj.Shape = shape
+    if color:
+        try:
+            obj.ViewObject.ShapeColor = color
+        except:
+            pass
+    return obj
+
+def is_ok(shape):
+    try:
+        return (shape is not None) and (not shape.isNull()) and shape.isValid()
+    except:
+        return False
+
+def T(shape, v):
+    m = App.Matrix()
+    m.move(App.Vector(*v))
+    return shape.transformGeometry(m)
+
+def R(shape, axis, ang, center=(0, 0, 0)):
+    return shape.rotate(App.Vector(*center), App.Vector(*axis), ang)
+
+def centered_box(w, d, h):
+    w = max(w, 0.1); d = max(d, 0.1); h = max(h, 0.1)
+    return T(Part.makeBox(w, d, h), (-w/2.0, -d/2.0, -h/2.0))
+
+def cyl(h, r, axis='Z', center=False):
+    h = max(h, 0.1); r = max(r, 0.1)
+    c = Part.makeCylinder(r, h)
+    if axis == 'X':
+        c = R(c, (0,1,0), 90)
+    elif axis == 'Y':
+        c = R(c, (1,0,0), 90)
+    if center:
+        if axis == 'Z':
+            c = T(c, (0,0,-h/2.0))
+        elif axis == 'X':
+            c = T(c, (-h/2.0,0,0))
+        elif axis == 'Y':
+            c = T(c, (0,-h/2.0,0))
+    return c
+
+def cone(r1, r2, h, axis='Z', center=False):
+    h = max(h, 0.1); r1 = max(r1, 0.1); r2 = max(r2, 0.1)
+    c = Part.makeCone(r1, r2, h)
+    if axis == 'X':
+        c = R(c, (0,1,0), 90)
+    elif axis == 'Y':
+        c = R(c, (1,0,0), 90)
+    if center:
+        if axis == 'Z':
+            c = T(c, (0,0,-h/2.0))
+        elif axis == 'X':
+            c = T(c, (-h/2.0,0,0))
+        elif axis == 'Y':
+            c = T(c, (0,-h/2.0,0))
+    return c
+
+def ring(h, Do, Di, axis='Z', center=False):
+    h = max(h, 0.1); Do = max(Do, 0.2); Di = max(min(Di, Do - 0.2), 0.1)
+    outer = cyl(h, Do/2.0, axis=axis, center=center)
+    inner = cyl(h + P['tolerance'], Di/2.0, axis=axis, center=center)
+    shape = outer.cut(inner)
+    return shape
+
+def safe_chamfer(shape, val):
+    if not is_ok(shape) or val <= 0:
+        return shape
+    try:
+        edges = [e for e in shape.Edges]
+        if len(edges) == 0: return shape
+        s = shape.makeChamfer(val, edges)
+        return s if is_ok(s) else shape
+    except:
+        return shape
+
+def safe_fillet(shape, val):
+    if not is_ok(shape) or val <= 0:
+        return shape
+    try:
+        edges = [e for e in shape.Edges]
+        if len(edges) < 3:  # evitar fillet en piezas pequeñas
+            return shape
+        s = shape.makeFillet(val, edges)
+        return s if is_ok(s) else shape
+    except:
+        return shape
+
+def fuse_all(shapes):
+    s = None
+    for sh in shapes:
+        if not is_ok(sh):
+            continue
+        s = sh if s is None else s.fuse(sh)
+        # limpieza incremental
+        try:
+            s = s.removeSplitter()
+        except:
+            pass
+    return s
+
+# --------------------------
+# Casco y blindaje
+# --------------------------
+def make_hull():
+    body = centered_box(P['bus_w'], P['bus_d'], P['bus_h'])
+    prow = cone(P['bus_d']/2.0, P['bus_d']*0.25, P['prow_len'], axis='X', center=True)
+    prow = T(prow, (-P['bus_w']/2.0 - P['prow_len']/2.0, 0, 0))
+    stern = cone(P['bus_d']*0.35, P['bus_d']/2.0, P['stern_len'], axis='X', center=True)
+    stern = T(stern, (P['bus_w']/2.0 + P['stern_len']/2.0, 0, 0))
+    hull = fuse_all([body, prow, stern])
+    hull = safe_chamfer(hull, P['chamfer_val'])
+    hull = safe_fillet(hull, P['fillet_val'])
+    return hull
+
+def make_armor(hull):
+    if not P['enable_armor']:
+        return None
+    try:
+        expanded = hull.makeOffsetShape(P['armor_gap'], 0.0)
+        armor   = expanded.makeOffsetShape(P['armor_thk'], 0.0)
+        if not is_ok(armor):
+            raise ValueError("offset failed")
+    except:
+        armor = centered_box(P['bus_w'] + 2*(P['armor_gap'] + P['armor_thk']),
+                             P['bus_d'] + 2*(P['armor_gap'] + P['armor_thk']),
+                             P['bus_h'] + 2*(P['armor_gap'] + P['armor_thk']))
+    armor = safe_chamfer(armor, P['chamfer_val']*0.5)
+    return armor
+
+# --------------------------
+# Paneles solares
+# --------------------------
+def make_panel_tile(w, h, t):
+    tile = centered_box(w, h, t)
+    return safe_chamfer(tile, min(P['chamfer_val'], 0.5))
+
+def make_wing(side=1):
+    if not P['enable_wings']:
+        return None
+    segs = []
+    span = P['panel_len']
+    seg_w = P['panel_w']
+    seg_h = span / max(P['panel_segments'], 1)
+
+    for i in range(P['panel_segments']):
+        seg = make_panel_tile(seg_w, seg_h, P['panel_t'])
+        offset_y = side * (P['bus_d']/2.0 + seg_w/2.0 + 6.0)
+        offset_x = -span/2.0 + (i + 0.5) * seg_h
+        seg = T(seg, (offset_x, offset_y, 0))
+        seg = R(seg, (0,1,0), side * P['panel_deploy_deg'], center=(offset_x, offset_y, 0))
+        segs.append(seg)
+
+    wing = fuse_all(segs)
+    return wing
+
+def make_panel_belt():
+    if not P['enable_panel_belt']:
+        return None
+    tiles = []
+    radius_y = P['bus_d']/2.0 + P['panel_belt_offset']
+    w = P['panel_tile_w']; h = P['panel_tile_h']; t = P['panel_tile_t']
+    for i in range(P['panel_ring_count']):
+        ang = 360.0 * i / max(P['panel_ring_count'], 1)
+        tile = make_panel_tile(w, h, t)
+        x = 0
+        y = radius_y * math.cos(math.radians(ang))
+        z = radius_y * math.sin(math.radians(ang)) * 0.35
+        tile = T(tile, (x, y, z))
+        tile = R(tile, (0,0,1), ang, center=(x,y,z))
+        tiles.append(tile)
+    belt = fuse_all(tiles)
+    return belt
+
+# --------------------------
+# Radiólisis: depósitos y flujo
+# --------------------------
+def make_tanks():
+    if not P['enable_tanks']:
+        return None
+    tanks = []
+    radial_offset = P['bus_w']/2.0 + P['tank_r'] + 6.0
+    for i in range(P['tank_count']):
+        ang = 360.0 * i / max(P['tank_count'], 1)
+        tnk = cyl(P['tank_h'], P['tank_r'], axis='Z', center=True)
+        cx = 0
+        cy = radial_offset * math.cos(math.radians(ang))
+        cz = radial_offset * math.sin(math.radians(ang)) * 0.3
+        tnk = T(tnk, (cx, cy, cz))
+        tanks.append(tnk)
+    shape = fuse_all(tanks)
+    shape = safe_chamfer(shape, 0.4)
+    return shape
+
+def make_manifold_and_pipes():
+    parts = []
+    # Colector longitudinal bajo el bus
+    length = P['bus_w'] + P['prow_len']*0.4 + P['stern_len']*0.4
+    manifold = cyl(length, P['manifold_r'], axis='X', center=True)
+    manifold = T(manifold, (0, 0, -P['bus_h']/2.0 + P['manifold_r'] + 6.0))
+    parts.append(manifold)
+
+    if P['enable_pipes'] and P['enable_tanks']:
+        radial_offset = P['bus_w']/2.0 + P['tank_r'] + 6.0
+        base_z = -P['bus_h']/2.0 + P['manifold_r'] + 6.0
+        min_len = 12.0  # más alto para evitar cilindros degenerados
+        for i in range(P['tank_count']):
+            ang = 360.0 * i / max(P['tank_count'], 1)
+            ty = radial_offset * math.cos(math.radians(ang))
+            tz = radial_offset * math.sin(math.radians(ang)) * 0.3
+            target_z = base_z
+            # Longitud vertical: desde el centro del tanque (z=tz) hasta el colector (target_z)
+            vlen = abs(tz - target_z)
+            vlen = max(vlen, min_len)
+            # cilindro centrado en su propia longitud
+            vpipe = cyl(vlen, P['pipe_r'], axis='Z', center=True)
+            # colocar su centro a mitad camino entre tz y target_z
+            cz = (tz + target_z) / 2.0
+            vpipe = T(vpipe, (0, ty, cz))
+            # nodo de unión
+            node = Part.makeSphere(P['node_r'])
+            node = T(node, (0, ty, target_z))
+            parts.extend([vpipe, node])
+
+    shape = fuse_all(parts)
+    shape = safe_fillet(shape, 0.8)
+    return shape
+
+# --------------------------
+# Antena
+# --------------------------
+def make_dish_and_boom():
+    if not P['enable_dish']:
+        return None
+    dish = Part.makeSphere(P['bus_d']*0.35)
+    cutbox = Part.makeBox(P['bus_d']*1.0, P['bus_d']*1.0, P['bus_d']*1.0)
+    cutbox = T(cutbox, (P['bus_d']/2.0, 0, 0))
+    dish = dish.cut(cutbox)
+    dish = T(dish, (P['bus_w']/2.0 + 40.0, 0, 0))
+    boom = cyl(60.0, 3.0, axis='X', center=True)
+    boom = T(boom, (P['bus_w']/2.0 + 20.0, 0, 0))
+    shape = fuse_all([dish, boom])
+    shape = safe_chamfer(shape, 0.5)
+    return shape
+
+# --------------------------
+# Propulsión y radiadores
+# --------------------------
+def make_engines():
+    if not P['enable_engines']:
+        return None
+    engines = []
+    rings = []
+    radial_r = P['bus_d']/2.0 + P['engine_r'] + 5.0
+    x_base = P['bus_w']/2.0 + P['stern_len']*0.35
+    for i in range(P['engine_count']):
+        ang = 360.0 * i / max(P['engine_count'], 1)
+        y = radial_r * math.cos(math.radians(ang))
+        z = radial_r * math.sin(math.radians(ang))
+        eng = cyl(P['engine_len'], P['engine_r'], axis='X', center=True)
+        eng = T(eng, (x_base, y, z))
+        r_front = ring(P['engine_ring_t'], Do=2*P['engine_r']+6.0, Di=2*P['engine_r']-2.0, axis='X', center=True)
+        r_front = T(r_front, (x_base - P['engine_len']/2.0, y, z))
+        engines.append(eng); rings.append(r_front)
+    shape = fuse_all(engines + rings)
+    shape = safe_chamfer(shape, 0.4)
+    return shape
+
+def make_radiators():
+    if not P['enable_radiators']:
+        return None
+    rad = centered_box(P['radiator_len'], P['radiator_w'], P['radiator_t'])
+    r1 = T(rad, (0, P['bus_d']/2.0 + P['radiator_w'] + 8.0, 0))
+    r2 = T(rad, (0, -P['bus_d']/2.0 - P['radiator_w'] - 8.0, 0))
+    shape = fuse_all([r1, r2])
+    shape = safe_chamfer(shape, 0.4)
+    return shape
+
+# --------------------------
+# Ensamblaje
+# --------------------------
+def build_star_sat():
+    hull = make_hull()
+    armor = make_armor(hull)
+
+    wing_L = make_wing(side=-1)
+    wing_R = make_wing(side=+1)
+    belt   = make_panel_belt()
+
+    tanks  = make_tanks()
+    flow   = make_manifold_and_pipes()
+    dish   = make_dish_and_boom()
+
+    engines = make_engines()
+    rads    = make_radiators()
+
+    parts = [hull, armor, wing_L, wing_R, belt, tanks, flow, dish, engines, rads]
+    full  = fuse_all(parts)
+
+    # Suavizado final controlado
+    full = safe_chamfer(full, P['chamfer_val']*0.5)
+    full = safe_fillet(full, P['fillet_val']*0.6)
+
+    obj = add_obj(full, "StarSat_Print", P['col_hull'])
+    return obj
+
+# Ejecutar
+build_star_sat()

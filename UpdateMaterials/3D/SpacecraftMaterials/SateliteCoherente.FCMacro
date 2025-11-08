@@ -1,0 +1,154 @@
+# -*- coding: utf-8 -*-
+# Macro: StarSat_Industrial_Fused_Expanded
+# Autor: Copilot para Víctor (Madrid)
+
+import FreeCAD as App, FreeCADGui as Gui, Part, math, random
+
+doc = App.newDocument("StarSat_Industrial_Fused_Expanded")
+
+P = dict(
+    # Bus y casco
+    wall_thk=2.0, chamfer_val=0.8,
+    bus_w=60.0, bus_d=60.0, bus_h=80.0,
+    prow_len=80.0, stern_len=60.0, deck_thk=3.0, hull_scale=1.15,
+    # Motores
+    engine_count=2, engine_len=80.0, engine_r=14.0, engine_ring_t=3.0,
+    reactor_d=40.0, reactor_l=80.0,
+    nozzle_throat_d=12.0, nozzle_exit_d=40.0, nozzle_l=50.0,
+    # Paneles solares
+    panel_len=160.0, panel_w=50.0, panel_t=2.5, panel_segments=3,
+    array_cell_w=10.0, array_cell_h=10.0, boom_len=40.0,
+    # Antena
+    dish_diameter=55.0, dish_depth=10.0, dish_thickness=1.5,
+    # Tanques
+    sphere_r=20.0, sphere_gap=50.0,
+    # Interior
+    cam_w=20.0, cam_h=15.0, cam_d=20.0,
+    rw_d=18.0, rw_th=8.0, rw_count=3,
+    bat_w=18.0, bat_h=12.0, bat_d=30.0, bat_count=2,
+    pcb_w=30.0, pcb_h=2.0, pcb_d=40.0,
+    # Tolerancias
+    overlap_bus=1.2, anti_tangent=0.4, post_fillet=0.6, global_refine=True,
+    # Colores
+    col_hull=(0.75,0.76,0.78), col_panel=(0.06,0.08,0.20),
+    col_metal=(0.70,0.70,0.72), col_detail=(0.5,0.5,0.5)
+)
+
+random.seed(42)
+
+# --- Utilidades ---
+def add_obj(shape, name, color=None):
+    o = doc.addObject("Part::Feature", name); o.Shape = shape
+    if color: 
+        try: o.ViewObject.ShapeColor = color
+        except: pass
+    return o
+
+def refine(shape):
+    try: return shape.removeSplitter().refine()
+    except: return shape
+
+def fuse_all(shapes):
+    fused = shapes[0]
+    for sh in shapes[1:]:
+        try: fused = fused.fuse(sh)
+        except: pass
+    if P['global_refine']: fused = refine(fused)
+    if P['post_fillet']>0:
+        try: fused = fused.makeFillet(P['post_fillet'], fused.Edges)
+        except: pass
+    return fused
+
+def centered_box(w,d,h): return Part.makeBox(w,d,h).translate(App.Vector(-w/2,-d/2,-h/2))
+def cyl(h,r,axis='Z'): return Part.makeCylinder(r,h)
+
+# --- Bus ---
+def make_bus():
+    outer = centered_box(P['bus_w'],P['bus_d'],P['bus_h'])
+    inner = centered_box(P['bus_w']-2*P['wall_thk'],P['bus_d']-2*P['wall_thk'],P['bus_h']-2*P['wall_thk'])
+    return outer.cut(inner)
+
+# --- Interior ---
+def make_camera():
+    return Part.makeBox(P['cam_w'],P['cam_d'],P['cam_h']).translate(App.Vector(0,0,P['bus_h']/4))
+
+def make_reaction_wheels():
+    wheels=[]
+    for i in range(P['rw_count']):
+        rw=Part.makeCylinder(P['rw_d']/2,P['rw_th'])
+        rw.translate(App.Vector(0,0,-P['bus_h']/4+i*(P['rw_th']+2)))
+        wheels.append(rw)
+    return wheels
+
+def make_batteries():
+    bats=[]
+    for i in range(P['bat_count']):
+        b=Part.makeBox(P['bat_w'],P['bat_d'],P['bat_h'])
+        b.translate(App.Vector(-P['bus_w']/4+i*(P['bat_w']+5),0,-P['bus_h']/3))
+        bats.append(b)
+    return bats
+
+def make_pcb():
+    return Part.makeBox(P['pcb_w'],P['pcb_d'],P['pcb_h']).translate(App.Vector(0,0,0))
+
+# --- Exterior ---
+def make_reactor():
+    r=cyl(P['reactor_l'],P['reactor_d']/2)
+    r.translate(App.Vector(P['bus_w']/2,0,0))
+    n=Part.makeCone(P['nozzle_throat_d']/2,P['nozzle_exit_d']/2,P['nozzle_l'])
+    n.translate(App.Vector(P['bus_w']/2+P['reactor_l'],0,0))
+    return [r,n]
+
+def make_side_engines():
+    engs=[]
+    for i in range(P['engine_count']):
+        off=((i*2)-1)*(P['bus_d']/2+10)
+        e=cyl(P['engine_len'],P['engine_r'])
+        e.translate(App.Vector(0,off,0))
+        engs.append(e)
+    return engs
+
+def make_panels():
+    panels=[]
+    for side in [-1,1]:
+        frame=centered_box(P['panel_len'],P['panel_w'],P['panel_t'])
+        frame.translate(App.Vector(0,side*(P['bus_d']/2+P['boom_len']),0))
+        panels.append(frame)
+    return panels
+
+def make_antenna():
+    dish=Part.makeCone(0,P['dish_diameter']/2,P['dish_depth'])
+    dish.translate(App.Vector(P['bus_w']/2+P['boom_len'],P['bus_d']/2+10,0))
+    return dish
+
+def make_tanks():
+    L=Part.makeSphere(P['sphere_r'])
+    R=Part.makeSphere(P['sphere_r'])
+    L.translate(App.Vector(-P['bus_w']/2-P['sphere_r'],-P['sphere_gap']/2,0))
+    R.translate(App.Vector(-P['bus_w']/2-P['sphere_r'], P['sphere_gap']/2,0))
+    return [L,R]
+
+# --- Construcción ---
+def build_unified():
+    parts=[]
+    parts.append(make_bus())
+    parts.append(make_camera())
+    parts+=make_reaction_wheels()
+    parts+=make_batteries()
+    parts.append(make_pcb())
+    parts+=make_reactor()
+    parts+=make_side_engines()
+    parts+=make_panels()
+    parts.append(make_antenna())
+    parts+=make_tanks()
+    fused=fuse_all(parts)
+    final=add_obj(fused,"Unified_StarSat_Fused",P['col_metal'])
+    doc.recompute()
+    try:
+        FreeCADGui.ActiveDocument.ActiveView.viewIsometric()
+        FreeCADGui.SendMsgToActiveView("ViewFit")
+    except: pass
+    return final
+
+if __name__=="__main__":
+    build_unified()

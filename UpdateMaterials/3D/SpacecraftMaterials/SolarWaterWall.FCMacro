@@ -1,0 +1,112 @@
+# -*- coding: utf-8 -*-
+import FreeCAD as App, FreeCADGui as Gui
+import Part, math
+
+DOC = "Solar_Barge_DFD_NoPanels"
+if App.ActiveDocument is None or App.ActiveDocument.Label != DOC:
+    App.newDocument(DOC)
+doc = App.ActiveDocument
+
+X = App.Vector(1,0,0); Y = App.Vector(0,1,0); Z = App.Vector(0,0,1)
+def rot_to_x(deg=90): return App.Rotation(Y, deg)
+
+def add(shape, name, layer=None, material=None, tol=0.0005):
+    o = doc.addObject("Part::Feature", name)
+    o.Shape = shape
+    if layer: o.addProperty("App::PropertyString","Layer","CAD"); o.Layer = layer
+    if material: o.addProperty("App::PropertyString","Material","CAD"); o.Material = material
+    o.addProperty("App::PropertyFloat","Tolerance","CAD"); o.Tolerance = tol
+    return o
+
+def place(obj, x=0,y=0,z=0,rot=None):
+    if rot is None: rot = App.Rotation()
+    obj.Placement = App.Placement(App.Vector(x,y,z), rot)
+    return obj
+
+def fuse_safe(a,b):
+    try: return a.fuse(b)
+    except: return a
+
+def make_cyl_x(d,L,cx=0,cy=0,cz=0):
+    c = Part.makeCylinder(d/2.0,L)
+    c.Placement = App.Placement(App.Vector(cx-L/2.0,cy,cz),rot_to_x())
+    return c
+
+def make_cone_x(d1,d2,L,cx=0,cy=0,cz=0):
+    c = Part.makeCone(d1/2.0,d2/2.0,L)
+    c.Placement = App.Placement(App.Vector(cx-L/2.0,cy,cz),rot_to_x())
+    return c
+
+def make_spherocyl(d,L):
+    cyl = Part.makeCylinder(d/2.0,L)
+    s1 = Part.makeSphere(d/2.0); s2 = Part.makeSphere(d/2.0)
+    s2.translate(App.Vector(0,0,L))
+    return cyl.fuse(s1).fuse(s2)
+
+# Contenedores por capa
+root = doc.addObject("App::Part","SPACECRAFT")
+LAYERS = {}
+for layer in ["STRUCTURE","THERMAL","POWER","FLUIDS","PROPULSION","AVIONICS","MISC"]:
+    p = doc.addObject("App::Part",layer)
+    p.addProperty("App::PropertyString","Layer","CAD"); p.Layer = layer
+    root.addObject(p); LAYERS[layer]=p
+
+# Casco
+nose = make_cone_x(0.60,0.0,0.80,cx=0.40)
+mid  = make_cyl_x(0.90,1.40,cx=1.50)
+rear = make_cyl_x(1.20,0.80,cx=2.50)
+fuselage = nose.fuse(mid).fuse(rear)
+hull_obj = add(fuselage,"Hull_Shell","STRUCTURE","Mixed hull")
+LAYERS["STRUCTURE"].addObject(hull_obj)
+
+# Escudo térmico
+shield = add(make_cone_x(3.2,0.5,0.9,cx=0.45),"HeatShield","STRUCTURE","C/C+SiC")
+LAYERS["STRUCTURE"].addObject(shield)
+
+# Reactor DFD
+reactor = add(make_cyl_x(0.80,0.90,cx=2.60),"DFD_Reactor","PROPULSION","DFD core")
+LAYERS["PROPULSION"].addObject(reactor)
+
+# Tobera magnética
+noz = make_cone_x(0.30,0.90,0.70,cx=2.85)
+noz_obj = add(noz,"Magnetic_Nozzle","PROPULSION","Nozzle")
+LAYERS["PROPULSION"].addObject(noz_obj)
+
+# Tanques criogénicos
+for side in ["L","R"]:
+    sign = +1 if side=="L" else -1
+    tank_o = make_spherocyl(0.9,1.8)
+    tank_i = make_spherocyl(0.9-0.024,1.8+0.002)
+    shell = tank_o.cut(tank_i)
+    t = add(shell,f"Cryotank_{side}","FLUIDS","Ti+ceramic")
+    place(t,x=1.0,y=sign*0.7,z=0.0,rot=rot_to_x())
+    LAYERS["FLUIDS"].addObject(t)
+
+# PEM
+pem = add(Part.makeBox(0.6,0.4,0.3),"Electrolyzer_PEM","POWER","PEM+microchannels")
+place(pem,x=1.2,y=0.0,z=-0.25)
+LAYERS["POWER"].addObject(pem)
+
+# COPV
+for gas,offs in [("H2",+0.4),("O2",-0.4)]:
+    copv_o = Part.makeCylinder(0.3,0.9)
+    copv_i = Part.makeCylinder(0.28,0.902)
+    copv = copv_o.cut(copv_i)
+    c = add(copv,f"COPV_{gas}","POWER","COPV 500 bar")
+    place(c,x=1.5,y=offs,z=0.2,rot=rot_to_x())
+    LAYERS["POWER"].addObject(c)
+
+# Radiadores
+for i in range(2):
+    rad = Part.makeBox(1.2,0.015,0.4)
+    r = add(rad,f"Radiator_{i}","THERMAL","Graphite-Al")
+    place(r,x=2.0,y=(-0.8 if i==0 else 0.8),z=0.0)
+    LAYERS["THERMAL"].addObject(r)
+
+doc.recompute()
+try:
+    Gui.ActiveDocument.ActiveView.viewAxonometric()
+    Gui.SendMsgToActiveView("ViewFit")
+except: pass
+
+print("Macro unificado sin paneles listo.")

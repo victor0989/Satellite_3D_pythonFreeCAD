@@ -1,0 +1,411 @@
+# -*- coding: utf-8 -*-
+# Macro: SolidStationSatellite_Armored.py
+# Estación sólida, larga, con blindaje tipo Parker y propulsión eléctrica de ultra-larga duración.
+
+import FreeCAD as App, Part, math
+try:
+    import FreeCADGui as Gui
+    HAS_GUI = True
+except:
+    HAS_GUI = False
+
+DOC_NAME = "SolidStationSatellite_Armored"
+
+# -------------------------
+# Configuración global
+# -------------------------
+class CFG:
+    SCALE = 1.0         # Escala global
+    FILLET_MM = 0       # Fillet en módulos (costoso). 0 = off
+    FUSE_GROUPS = True  # Sólidos por subensamblaje
+    FUSE_WHOLE = False  # Fusión total (pesado)
+    COLORIZE = True
+    ARMOR_ON = True     # Activar blindaje
+    ARMOR_MM = 180      # Espesor total aprox. del "stack" de armadura alrededor de módulos
+    SHIELD_R = 5600     # Radio nominal del escudo Parker-like
+    EP_HEAVY = True     # Activar bus de propulsión eléctrica pesado
+
+def mm(x): return x * CFG.SCALE
+
+# Paleta sugerida (no afecta a malla, solo visual)
+COL = dict(
+    truss=(0.72,0.75,0.80),
+    module=(0.88,0.90,0.94),
+    ring=(0.82,0.84,0.88),
+    solar=(0.95,0.75,0.12),
+    radiator=(0.82,0.88,0.96),
+    hga=(0.86,0.86,0.90),
+    mmod=(0.86,0.86,0.88),
+    armor_cc=(0.12,0.12,0.12),   # Carbon-Carbon
+    armor_foam=(0.25,0.25,0.28), # núcleo/foam carbono
+    armor_kev=(0.80,0.75,0.55),  # Kevlar
+    ep_bus=(0.60,0.64,0.70),
+    ep_rads=(0.78,0.84,0.95)
+)
+
+# -------------------------
+# Utilidades
+# -------------------------
+def ensure_doc(name=DOC_NAME):
+    if App.ActiveDocument and App.ActiveDocument.Name == name:
+        doc = App.ActiveDocument
+        for o in list(doc.Objects): doc.removeObject(o.Name)
+        return doc
+    for d in list(App.listDocuments().values()):
+        if d.Name == name: App.closeDocument(d.Name)
+    return App.newDocument(name)
+
+def add_shape(shape, name, col=(0.75,0.77,0.8), tr=0):
+    obj = App.ActiveDocument.addObject("Part::Feature", name)
+    obj.Shape = shape
+    if HAS_GUI and CFG.COLORIZE:
+        obj.ViewObject.ShapeColor = col
+        obj.ViewObject.Transparency = tr
+    return obj
+
+def fuse_list(shapes):
+    shapes = [s for s in shapes if s and not s.isNull()]
+    if not shapes: return None
+    out = shapes[0]
+    for s in shapes[1:]:
+        try: out = out.fuse(s)
+        except Exception: pass
+    try: out = out.removeSplitter()
+    except Exception: pass
+    return out
+
+def compound(shapes):
+    shapes = [s for s in shapes if s and not s.isNull()]
+    return Part.makeCompound(shapes) if shapes else None
+
+def try_fillet(shape, r):
+    if r <= 0: return shape
+    try:
+        edges = [e for e in shape.Edges if e.Length > mm(80)]
+        return shape.makeFillet(r, edges)
+    except Exception:
+        return shape
+
+def bb_centers(bb):
+    cx = (bb.XMin + bb.XMax) / 2.0
+    cy = (bb.YMin + bb.YMax) / 2.0
+    cz = (bb.ZMin + bb.ZMax) / 2.0
+    return cx, cy, cz
+
+# -------------------------
+# Primitivas (360° siempre)
+# -------------------------
+def cyl(r, h, pos, axis=(1,0,0)):
+    return Part.makeCylinder(r, h, App.Vector(*pos), App.Vector(*axis), 360.0)
+
+def cone(r1, r2, h, pos, axis=(1,0,0)):
+    return Part.makeCone(r1, r2, h, App.Vector(*pos), App.Vector(*axis), 360.0)
+
+def box(l, w, h, pos=(0,0,0)):
+    return Part.makeBox(l, w, h, App.Vector(*pos))
+
+def ring_cut(r_out, r_in, thick, pos, axis=(1,0,0)):
+    a = cyl(r_out, thick, pos, axis)
+    b = cyl(r_in, thick + mm(2), (pos[0] - mm(1), pos[1], pos[2]), axis)
+    return a.cut(b)
+
+# -------------------------
+# Estructura y módulos
+# -------------------------
+def make_truss_backbone(L=mm(70000), W=mm(3600), H=mm(3600), cell=mm(5000)):
+    """Truss robusto con placas y diagonales."""
+    beams = []
+    # Largueros
+    for y in (-W/2, W/2):
+        for z in (-H/2, H/2):
+            beams.append(box(L, mm(260), mm(260), pos=(-L/2, y - mm(130), z - mm(130))))
+    # Marcos por celda
+    n = int(L // cell)
+    for i in range(n + 1):
+        x = -L/2 + i * cell
+        beams += [
+            box(mm(220), W, mm(220), pos=(x - mm(110), -W/2, -H/2)),
+            box(mm(220), W, mm(220), pos=(x - mm(110), -W/2, H/2 - mm(220))),
+            box(mm(220), mm(220), H, pos=(x - mm(110), -W/2, -H/2)),
+            box(mm(220), mm(220), H, pos=(x - mm(110), W/2 - mm(220), -H/2)),
+        ]
+    # Diagonales alternas
+    diag_t = mm(180)
+    for i in range(n):
+        x0 = -L/2 + i * cell
+        beams.append(box(cell, diag_t, diag_t, pos=(x0, -W/2, -H/2)))
+        beams.append(box(cell, diag_t, diag_t, pos=(x0, W/2 - diag_t, H/2 - diag_t)))
+    # Placas (skins) en caras laterales
+    skin_t = mm(40)
+    beams += [
+        box(L, skin_t, H, pos=(-L/2, -W/2 - skin_t, -H/2)),
+        box(L, skin_t, H, pos=(-L/2, W/2, -H/2)),
+    ]
+    return fuse_list(beams) if CFG.FUSE_GROUPS else compound(beams)
+
+def make_pressurized_module(L=mm(10000), R=mm(2500), x_center=0, ports=('axial+','axial-','radial+y','radial-y')):
+    body = cyl(R, L, pos=(x_center - L/2, 0, 0), axis=(1,0,0))
+    body = try_fillet(body, CFG.FILLET_MM)
+    # Anillos tipo CBM/IDSS
+    rings = []
+    cbm_r = mm(950); cbm_t = mm(140)
+    for p in ports:
+        if p == 'axial+':
+            rings.append(ring_cut(cbm_r + cbm_t, cbm_r, mm(120), (x_center + L/2 - mm(60), -mm(60), -mm(60)), (1,0,0)))
+        elif p == 'axial-':
+            rings.append(ring_cut(cbm_r + cbm_t, cbm_r, mm(120), (x_center - L/2 - mm(60), -mm(60), -mm(60)), (1,0,0)))
+        elif p == 'radial+y':
+            rings.append(ring_cut(cbm_r + cbm_t, cbm_r, mm(100), (x_center, R - mm(50), -mm(50)), (0,1,0)))
+        elif p == 'radial-y':
+            rings.append(ring_cut(cbm_r + cbm_t, cbm_r, mm(100), (x_center, -R - mm(50), -mm(50)), (0,1,0)))
+        elif p == 'radial+z':
+            rings.append(ring_cut(cbm_r + cbm_t, cbm_r, mm(100), (x_center, -mm(50), R - mm(50)), (0,0,1)))
+        elif p == 'radial-z':
+            rings.append(ring_cut(cbm_r + cbm_t, cbm_r, mm(100), (x_center, -mm(50), -R - mm(50)), (0,0,1)))
+    parts = [body] + rings
+    mod = fuse_list(parts) if CFG.FUSE_GROUPS else compound(parts)
+    return mod
+
+# -------------------------
+# Blindaje tipo Parker (capas)
+# -------------------------
+def make_cyl_armor_stack(L, R, x_center, stack=(('cc',mm(40)), ('foam',mm(80)), ('kev',mm(60)))):
+    """Crea 3 capas concéntricas alrededor de un módulo (sin abrir sobre puertos, para simplicidad robusta)."""
+    shells = []
+    r0 = R
+    for mat, th in stack:
+        r_out = r0 + th
+        shell = cyl(r_out, L, pos=(x_center - L/2, 0, 0))
+        inner = cyl(r0, L + mm(2), pos=(x_center - L/2 - mm(1), 0, 0))
+        shell = shell.cut(inner)
+        col = COL['armor_cc'] if mat=='cc' else COL['armor_foam'] if mat=='foam' else COL['armor_kev']
+        shells.append((shell, col))
+        r0 = r_out
+    return shells, r0  # devuelve capas y radio final
+
+def make_parker_multilayer_shield(center_x, R, t=mm(280)):
+    """Escudo frontal multicapa estilo Parker: CC + foam + Kevlar + aros + brazos."""
+    # Capas cónicas apiladas
+    layers = []
+    # CC
+    cc = cone(R, R*0.78, t, (center_x, 0, -t/2), axis=(1,0,0))
+    layers.append((cc, COL['armor_cc']))
+    # Foam
+    foam = cone(R - mm(60), (R*0.78) - mm(60), t - mm(40), (center_x - mm(20), 0, - (t - mm(40))/2), axis=(1,0,0))
+    layers.append((foam, COL['armor_foam']))
+    # Kevlar
+    kev = cone(R - mm(120), (R*0.78) - mm(120), t - mm(80), (center_x - mm(40), 0, - (t - mm(80))/2), axis=(1,0,0))
+    layers.append((kev, COL['armor_kev']))
+    # Aros de refuerzo
+    rim1 = ring_cut(R + mm(240), R + mm(60), mm(180), (center_x - mm(60), -mm(90), -mm(90)), (1,0,0))
+    rim2 = ring_cut(R*0.55 + mm(160), R*0.55, mm(140), (center_x - mm(60), -mm(80), -mm(80)), (1,0,0))
+    # Brazos
+    arms=[]
+    for ang in (0, 60, 120, 180, 240, 300):
+        y = (R + mm(140)) * math.cos(math.radians(ang))
+        z = (R + mm(140)) * math.sin(math.radians(ang))
+        arms.append(box(mm(5200), mm(200), mm(200), pos=(center_x - mm(5200), y - mm(100), z - mm(100))))
+    shield_parts = [cc, foam, kev, rim1, rim2] + arms
+    return shield_parts
+
+# -------------------------
+# Propulsión eléctrica (larga duración)
+# -------------------------
+def make_ep_tank_farm(x_center=mm(-26000), rows=2, cols=4, r=mm(650), h=mm(2400), pitch_y=mm(1600), pitch_z=mm(1600)):
+    """Granja de tanques de xenón en bastidores."""
+    tanks=[]
+    base = box(mm(5200), mm(2800), mm(2600), pos=(x_center - mm(2600), -mm(1400), -mm(1300)))
+    for i in range(cols):
+        x = x_center - mm(2200) + i*mm(1200)
+        for ry in range(rows):
+            for rz in range(rows):
+                y = (ry - 0.5) * pitch_y
+                z = (rz - 0.5) * pitch_z
+                tanks.append(cyl(r, h, (x, y - r, z - r), axis=(1,0,0)))
+    farm = fuse_list([base]+tanks) if CFG.FUSE_GROUPS else compound([base]+tanks)
+    return farm
+
+def make_hall_cluster(x, y, z, count=3, bell_r=mm(420), bell_h=mm(380)):
+    """Cluster de thrusters Hall/ión en cardán simple."""
+    mount = box(mm(800), mm(800), mm(300), pos=(x - mm(400), y - mm(400), z - mm(150)))
+    yoke = cyl(mm(220), mm(420), (x, y, z - mm(210)), axis=(0,0,1))
+    bells=[]
+    for i in range(count):
+        off = (i - (count-1)/2.0) * mm(500)
+        bell = cone(bell_r, mm(60), bell_h, (x + mm(300), y + off, z), axis=(1,0,0))
+        plenum = cyl(mm(180), mm(300), (x + mm(200), y + off, z - mm(150)), axis=(0,0,1))
+        bells += [bell, plenum]
+    return fuse_list([mount, yoke] + bells) if CFG.FUSE_GROUPS else compound([mount, yoke] + bells)
+
+def make_ep_pod(x, y, z):
+    """Pod completo: clúster triple + radiadores locales + PPU."""
+    cluster = make_hall_cluster(x, y, z)
+    # Radiadores dedicados al EP (dos alas finas)
+    rad1 = box(mm(2600), mm(1200), mm(50), pos=(x + mm(1000), y - mm(600), z - mm(25)))
+    rad2 = box(mm(2600), mm(1200), mm(50), pos=(x + mm(1000), y - mm(600), z - mm(700)))
+    # PPU (Power Processing Units)
+    ppu = box(mm(1200), mm(600), mm(400), pos=(x - mm(1200), y - mm(300), z - mm(200)))
+    parts = [cluster, rad1, rad2, ppu]
+    return fuse_list(parts) if CFG.FUSE_GROUPS else compound(parts)
+
+def make_ep_system():
+    """Sistema EP: granja de tanques + 4 pods EP alrededor de popa del truss."""
+    assemblies = []
+    farm = make_ep_tank_farm(x_center=mm(-28000))
+    assemblies.append(farm)
+    # Cuatro pods en ±Y, ±Z
+    pods = [
+        make_ep_pod(mm(-24000),  mm(2600),  mm(1200)),
+        make_ep_pod(mm(-24000), -mm(2600),  mm(1200)),
+        make_ep_pod(mm(-24000),  mm(2600), -mm(1200)),
+        make_ep_pod(mm(-24000), -mm(2600), -mm(1200)),
+    ]
+    assemblies += pods
+    return fuse_list(assemblies) if CFG.FUSE_GROUPS else compound(assemblies)
+
+# -------------------------
+# Generadores de energía y térmico
+# -------------------------
+def make_solar_yoke_with_arrays(root_x=mm(15000), side=1, panels=8, panel_l=mm(8000), panel_w=mm(3000)):
+    base = cyl(mm(360), mm(560), (root_x - mm(280), side * mm(2100), -mm(280)), axis=(1,0,0))
+    g1 = cyl(mm(280), mm(460), (root_x, side * mm(2100), -mm(230)), axis=(0,1,0))
+    g2 = cyl(mm(280), mm(460), (root_x, side * mm(2100), -mm(230)), axis=(0,0,1))
+    mast = box(mm(2600), mm(320), mm(320), pos=(root_x, side * (mm(2100) - mm(160)), -mm(160)))
+    arr=[]
+    for i in range(panels):
+        seg = box(panel_l, panel_w, mm(40),
+                  pos=(root_x + mm(2600) + i * (panel_l + mm(120)), side * (mm(2100) - panel_w/2), -mm(20)))
+        bus = box(panel_l, mm(180), mm(120),
+                  pos=(root_x + mm(2600) + i * (panel_l + mm(120)), side * (mm(2100) - mm(90)), -mm(60)))
+        arr += [seg, bus]
+    return fuse_list([base,g1,g2,mast] + arr) if CFG.FUSE_GROUPS else compound([base,g1,g2,mast] + arr)
+
+def make_radiator_wing(root_x=mm(8000), side=1, spans=4, span_l=mm(5200), w=mm(3600), t=mm(60)):
+    hinge = box(mm(700), mm(700), mm(700), pos=(root_x, side * (mm(2400) - mm(350)), -mm(350)))
+    mast = box(mm(1800), mm(320), mm(320), pos=(root_x + mm(700), side * (mm(2400) - mm(160)), -mm(160)))
+    panels=[]
+    for i in range(spans):
+        p = box(span_l, w, t, pos=(root_x + mm(2500) + i*(span_l + mm(120)), side * (mm(2400) - w), -t/2))
+        panels.append(p)
+    return fuse_list([hinge,mast] + panels) if CFG.FUSE_GROUPS else compound([hinge,mast] + panels)
+
+# -------------------------
+# Antenas, sensores y RCS
+# -------------------------
+def make_high_gain_gimbal(x=mm(-2000), y=mm(3000), z=0, dish_r=mm(1800)):
+    base = box(mm(700), mm(700), mm(700), pos=(x - mm(350), y - mm(350), z - mm(350)))
+    yoke = cyl(mm(240), mm(520), (x, y, z - mm(260)), axis=(0,0,1))
+    dish = cone(dish_r, mm(140), mm(460), (x + mm(300), y, z - mm(230)), axis=(1,0,0))
+    feed = cyl(mm(140), mm(540), (x + mm(560), y, z), axis=(1,0,0))
+    return fuse_list([base, yoke, dish, feed]) if CFG.FUSE_GROUPS else compound([base, yoke, dish, feed])
+
+def make_star_trackers(x=mm(3000), y=mm(2400), z=mm(1000)):
+    cam1 = cyl(mm(100), mm(420), (x, y, z - mm(210)), axis=(0,0,1))
+    cam2 = cyl(mm(100), mm(420), (x, -y, z - mm(210)), axis=(0,0,1))
+    base = box(mm(460), mm(460), mm(460), pos=(x - mm(230), -mm(230), z - mm(230)))
+    return fuse_list([base, cam1, cam2]) if CFG.FUSE_GROUPS else compound([base, cam1, cam2])
+
+def make_rcs_quad(x, y, z):
+    base = box(mm(520), mm(520), mm(520), pos=(x - mm(260), y - mm(260), z - mm(260)))
+    thr = [cone(mm(220), mm(40), mm(300), (x, y, z), axis=a) for a in [(1,0,0), (-1,0,0), (0,1,0), (0,-1,0)]]
+    return fuse_list([base] + thr) if CFG.FUSE_GROUPS else compound([base] + thr)
+
+# -------------------------
+# Ensamblaje principal
+# -------------------------
+def assemble():
+    doc = ensure_doc()
+    assemblies = []
+
+    # 1) Truss
+    TRUSS_L = mm(75000)
+    truss = make_truss_backbone(L=TRUSS_L)
+    add_shape(truss, "Truss", COL['truss'])
+    assemblies.append(truss)
+
+    # 2) Módulos presurizados (cadena en tercio frontal)
+    node = make_pressurized_module(L=mm(6000), R=mm(2500), x_center=mm(-12000),
+                                   ports=('axial+','axial-','radial+y','radial-y'))
+    lab = make_pressurized_module(L=mm(10000), R=mm(2600), x_center=mm(-4000),
+                                  ports=('axial+','radial+z','radial-z'))
+    hab = make_pressurized_module(L=mm(11000), R=mm(2700), x_center=mm(6000),
+                                  ports=('axial+','radial+y','radial-y'))
+    add_shape(node, "Node", COL['module']); assemblies.append(node)
+    add_shape(lab,  "Lab",  COL['module']); assemblies.append(lab)
+    add_shape(hab,  "Hab",  COL['module']); assemblies.append(hab)
+
+    # 3) Blindaje alrededor de los módulos
+    if CFG.ARMOR_ON:
+        for name, (L,R,x0) in dict(
+            ArmorNode=(mm(6000), mm(2500), mm(-12000)),
+            ArmorLab =(mm(10000), mm(2600), mm(-4000)),
+            ArmorHab =(mm(11000), mm(2700), mm(6000))
+        ).items():
+            layers, r_final = make_cyl_armor_stack(L, R, x0)
+            add_shape(layers[0][0], name+"_CC",   COL['armor_cc'])
+            add_shape(layers[1][0], name+"_Foam", COL['armor_foam'])
+            add_shape(layers[2][0], name+"_Kev",  COL['armor_kev'])
+            assemblies += [layers[0][0], layers[1][0], layers[2][0]]
+
+    # 4) Escudo Parker-like multicapa en proa + boom de instrumentos
+    shield_parts = make_parker_multilayer_shield(center_x=mm(26000), R=mm(CFG.SHIELD_R))
+    add_shape(fuse_list(shield_parts) if CFG.FUSE_GROUPS else compound(shield_parts), "ParkerShield", COL['armor_cc'])
+    assemblies += shield_parts
+    boom = box(mm(9000), mm(180), mm(180), pos=(mm(26000), -mm(90), -mm(90)))
+    add_shape(boom, "InstrumentBoom", (0.5,0.55,0.6)); assemblies.append(boom)
+
+    # 5) Radiadores generales (arriba y abajo, zona media)
+    rad_up = make_radiator_wing(root_x=mm(9000), side=1, spans=4, span_l=mm(5200), w=mm(3800))
+    rad_dn = make_radiator_wing(root_x=mm(9000), side=-1, spans=4, span_l=mm(5200), w=mm(3800))
+    add_shape(rad_up, "Radiator_Up", COL['radiator'])
+    add_shape(rad_dn, "Radiator_Down", COL['radiator'])
+    assemblies += [rad_up, rad_dn]
+
+    # 6) Alas solares largas (para EP)
+    sa_r = make_solar_yoke_with_arrays(root_x=mm(16000), side=1, panels=9, panel_l=mm(8200), panel_w=mm(3200))
+    sa_l = make_solar_yoke_with_arrays(root_x=mm(16000), side=-1, panels=9, panel_l=mm(8200), panel_w=mm(3200))
+    add_shape(sa_r, "SolarArray_R", COL['solar'])
+    add_shape(sa_l, "SolarArray_L", COL['solar'])
+    assemblies += [sa_r, sa_l]
+
+    # 7) Antena HGA y star trackers
+    hga = make_high_gain_gimbal(x=mm(-2000), y=mm(3200), z=mm(800))
+    st  = make_star_trackers(x=mm(3000), y=mm(2400), z=mm(1000))
+    add_shape(hga, "HighGainAntenna", COL['hga']); assemblies.append(hga)
+    add_shape(st,  "StarTrackers", (0.7,0.74,0.78)); assemblies.append(st)
+
+    # 8) RCS cuádruples (extremos del truss) — bug corregido
+    rcs_front = make_rcs_quad(x=mm(30000), y=mm(2400), z=0)
+    rcs_back  = make_rcs_quad(x=mm(-32000), y=-mm(2400), z=0)
+    add_shape(rcs_front, "RCS_Front", (0.60,0.62,0.66))
+    add_shape(rcs_back,  "RCS_Back",  (0.60,0.62,0.66))
+    assemblies += [rcs_front, rcs_back]
+
+    # 9) Bus de propulsión eléctrica de ultra-larga duración
+    if CFG.EP_HEAVY:
+        ep = make_ep_system()
+        add_shape(ep, "EP_System", COL['ep_bus'])
+        assemblies.append(ep)
+
+    # 10) Radiadores específicos EP (espina lateral)
+    ep_rads = box(mm(18000), mm(800), mm(60), pos=(mm(-22000), mm(3200), -mm(30)))
+    ep_rads2= box(mm(18000), mm(800), mm(60), pos=(mm(-22000), -mm(4000), -mm(30)))
+    add_shape(ep_rads,  "EP_Radiators_1", COL['ep_rads'])
+    add_shape(ep_rads2, "EP_Radiators_2", COL['ep_rads'])
+    assemblies += [ep_rads, ep_rads2]
+
+    # 11) Compuesto/fusión final
+    if CFG.FUSE_WHOLE:
+        station = fuse_list(assemblies)
+        add_shape(station, "Station_Solid", (0.85,0.87,0.9))
+    else:
+        station = compound(assemblies)
+        add_shape(station, "Station_Compound", (0.85,0.87,0.9))
+
+    doc.recompute()
+    if HAS_GUI:
+        Gui.SendMsgToActiveView("ViewFit")
+        Gui.activeDocument().activeView().viewAxonometric()
+
+if __name__ == "__main__":
+    assemble()
