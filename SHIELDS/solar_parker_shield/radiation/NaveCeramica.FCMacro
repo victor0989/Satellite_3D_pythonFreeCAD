@@ -1,0 +1,198 @@
+# -*- coding:utf-8 -*-
+import FreeCAD as App, FreeCADGui as Gui, Part, math
+
+# Documento
+doc_name = "Solar_Probe_3D_Print_Resilient"
+doc = App.newDocument(doc_name) if App.ActiveDocument is None or App.ActiveDocument.Label != doc_name else App.ActiveDocument
+
+# Parámetros (mm)
+P = {
+    "nose_len": 900.0, "nose_base_d": 800.0,
+    "mid_len": 2000.0, "mid_d": 1200.0,
+    "rear_len": 1100.0, "rear_d": 1400.0,
+    "hull_t": 6.0,                # pared imprimible
+    "overlap": 1.0,               # solape anti-tangencia
+    "fillet_r": 12.0,             # radios para alivio termoelástico
+    "ring_th": 20.0, "ring_ro": 600.0
+}
+
+# TPS reforzado estilo Parker
+TPS = {
+    "tps_d": 3000.0,              # más grande para umbra amplia
+    "c_faces_th": 10.0,           # cada cara C/C
+    "foam_th": 140.0,             # núcleo espeso
+    "ceramic_th": 2.0,            # recubrimiento blanco
+    "edge_uhtc_th": 8.0,          # borde perimetral UHTC
+    "tps_gap": 160.0,             # separación desde nariz
+    "sup_L": 320.0,
+    "sup_d_base": 1100.0, "sup_d_tip": 700.0
+}
+
+# Truss de baja conducción (6)
+TRUSS = {"count": 6, "tube_d": 10.0, "tube_L": 300.0, "attach_R": 650.0,
+         "attach_cx": P["nose_len"] + P["mid_len"]*0.12}
+
+# Radiadores en umbra
+RAD = {"panel_w": 900.0, "panel_h": 700.0, "panel_th": 4.0, "count": 6,
+       "arm_d": 6.0, "arm_L": 100.0}
+
+# Lattice núcleo (impresión 3D)
+LAT = {"cell": 60.0, "strut_d": 6.0, "span_d": TPS["tps_d"]-18.0, "th": TPS["foam_th"]-6.0}
+
+# Materiales (metadatos para referencia)
+MAT = {
+    'AL': {'name':'AA-2xxx','rho':2700.0},
+    'TI': {'name':'Ti-6Al-4V','rho':4430.0},
+    'STEEL': {'name':'SS-304','rho':8000.0},
+    'COPPER': {'name':'Copper','rho':8960.0},
+    'CC': {'name':'C/C TPS','rho':1600.0},
+    'FOAM_C': {'name':'Carbon Foam','rho':120.0},
+    'CER_WHITE': {'name':'Ceramic White Coat','rho':3000.0},
+    'SiC': {'name':'Silicon Carbide','rho':3210.0},
+    'UHTC': {'name':'UHTC Mix','rho':10600.0}
+}
+
+# Utilidades
+X = App.Vector(1,0,0); Y = App.Vector(0,1,0); Z = App.Vector(0,0,1)
+def rot_to_x(): return App.Rotation(Y,90)
+
+def add_obj(s, label):
+    o = doc.addObject("Part::Feature", label); o.Shape = s; return o
+
+def set_mat(o, key):
+    m = MAT.get(key, None)
+    if not m: return
+    o.addProperty("App::PropertyString","Material","Meta","").Material = m.get('name','')
+    o.addProperty("App::PropertyMap","MaterialData","Meta","").MaterialData = {k:str(v) for k,v in m.items()}
+    o.addProperty("App::PropertyFloat","Density","Meta","").Density = m.get('rho',0.0)
+
+def cyl_x(d,L,cx=0,cy=0,cz=0):
+    c = Part.makeCylinder(d/2.0, L)
+    c.Placement = App.Placement(App.Vector(cx-L/2.0,cy,cz), rot_to_x())
+    return c
+
+def cone_x(d1,d2,L,cx=0,cy=0,cz=0):
+    c = Part.makeCone(d1/2.0, d2/2.0, L)
+    c.Placement = App.Placement(App.Vector(cx-L/2.0,cy,cz), rot_to_x())
+    return c
+
+def box(w,d,h,cx=0,cy=0,cz=0):
+    b = Part.makeBox(w,d,h)
+    b.Placement = App.Placement(App.Vector(cx-w/2.0,cy-d/2.0,cz-h/2.0), App.Rotation())
+    return b
+
+def fillet_body(s, r):
+    try:
+        # fillet global por aristas; simple: usar removeSplitter para limpiar
+        return s.removeSplitter()
+    except:
+        return s
+
+def fuse_list(shapes):
+    f = shapes[0]
+    for s in shapes[1:]:
+        try:
+            f = f.fuse(s)
+            f = f.removeSplitter()
+        except:
+            f = f.removeSplitter().fuse(s).removeSplitter()
+    return f
+
+# 1) Fuselaje con nariz cerámica
+nose = cone_x(P["nose_base_d"], 0.0, P["nose_len"], cx=P["nose_len"]/2.0)
+mid  = cyl_x(P["mid_d"], P["mid_len"], cx=P["nose_len"]+P["mid_len"]/2.0)
+rear = cyl_x(P["rear_d"], P["rear_len"], cx=P["nose_len"]+P["mid_len"]+P["rear_len"]/2.0)
+hull_full = nose.fuse(mid).fuse(rear)
+
+# Cascarón imprimible
+try:
+    inner = hull_full.makeOffsetShape(-P["hull_t"], 0.02, join=2, fill=True)
+    hull = hull_full.cut(inner)
+except Exception:
+    hull = hull_full  # fallback si falla el offset
+
+
+hull = fillet_body(hull, P["fillet_r"])
+hull_obj = add_obj(hull, "Hull"); set_mat(hull_obj, 'AL')
+
+# Nariz cerámica (overlap)
+nose_ring = cyl_x(P["nose_base_d"]+P["overlap"], 20.0, cx=P["nose_len"]-10.0)
+nose_shell = nose_ring.fuse(cone_x(P["nose_base_d"], 0.0, 60.0, cx=P["nose_len"]+30.0))
+nose_shell_obj = add_obj(nose_shell, "NoseCeramic"); set_mat(nose_shell_obj, 'SiC')
+
+# 2) TPS sándwich reforzado
+tps_center = P["nose_len"] + TPS["tps_gap"] + TPS["sup_L"] + P["overlap"] + \
+             (TPS["c_faces_th"]*2 + TPS["foam_th"] + TPS["ceramic_th"])/2.0
+
+back_cc   = cyl_x(TPS["tps_d"], TPS["c_faces_th"], cx=tps_center - (TPS["foam_th"]/2.0 + TPS["c_faces_th"]/2.0 + TPS["ceramic_th"]/2.0))
+core_foam = cyl_x(TPS["tps_d"]-10.0, TPS["foam_th"], cx=tps_center)  # margen para borde
+front_cc  = cyl_x(TPS["tps_d"], TPS["c_faces_th"], cx=tps_center + (TPS["foam_th"]/2.0 + TPS["c_faces_th"]/2.0))
+coat      = cyl_x(TPS["tps_d"], TPS["ceramic_th"], cx=tps_center + (TPS["foam_th"]/2.0 + TPS["c_faces_th"] + TPS["ceramic_th"]/2.0))
+
+# Borde perimetral UHTC (anillo)
+edge_uhtc = Part.makeTorus(TPS["tps_d"]/2.0 - 20.0, TPS["edge_uhtc_th"])
+edge_uhtc.Placement = App.Placement(App.Vector(tps_center,0,0), App.Rotation(App.Vector(0,1,0),90))
+
+# Soporte cónico central (sombrerete de guía)
+tps_sup = cone_x(TPS["sup_d_base"], TPS["sup_d_tip"], TPS["sup_L"], cx=P["nose_len"]+TPS["tps_gap"]+TPS["sup_L"]/2.0)
+
+# 3) Lattice del núcleo (impresión 3D)
+lat_shapes = []
+lat_cx0 = tps_center - LAT["th"]/2.0 + 3.0
+nx = int(LAT["th"] / LAT["cell"]) + 1
+ny = int((LAT["span_d"])/LAT["cell"])
+nz = ny
+for ix in range(nx):
+    for j in range(ny):
+        for k in range(nz):
+            ang = (j+k) % 2
+            y = - (LAT["span_d"]/2.0) + j*LAT["cell"]
+            z = - (LAT["span_d"]/2.0) + k*LAT["cell"]
+            Ls = LAT["cell"]*1.2
+            rod = Part.makeCylinder(LAT["strut_d"]/2.0, Ls)
+            rod.Placement = App.Placement(App.Vector(lat_cx0 + ix*LAT["cell"], y, z),
+                                          App.Rotation(App.Vector(0,0,1), 45 if ang==0 else -45))
+            lat_shapes.append(rod)
+
+lat = fuse_list(lat_shapes) if lat_shapes else core_foam
+
+# 4) Truss de baja conducción (6 brazos)
+truss_shapes = []
+for i in range(TRUSS["count"]):
+    ang = 2*math.pi*i/TRUSS["count"]
+    y = TRUSS["attach_R"]*math.cos(ang)
+    z = TRUSS["attach_R"]*math.sin(ang)
+    tube = Part.makeCylinder(TRUSS["tube_d"]/2.0, TRUSS["tube_L"])
+    base = App.Vector(TRUSS["attach_cx"]-TRUSS["tube_L"]/2.0, y, z)
+    tube.Placement = App.Placement(base, rot_to_x())
+    truss_shapes.append(tube)
+
+# 5) Radiadores en umbra con brazos finos
+rad_shapes = []
+rad_cx = tps_center + TPS["c_faces_th"] + TPS["foam_th"] + TPS["ceramic_th"] + 220.0
+for i in range(RAD["count"]):
+    off_y = (i - (RAD["count"]-1)/2.0) * (RAD["panel_h"] + 60.0)
+    panel = box(RAD["panel_w"], RAD["panel_th"], RAD["panel_h"], cx=rad_cx + i*15.0, cy=off_y, cz=0.0)
+    arm   = Part.makeCylinder(RAD["arm_d"]/2.0, RAD["arm_L"])
+    arm.Placement = App.Placement(App.Vector(rad_cx - 70.0, off_y, 0.0), rot_to_x())
+    rad_shapes += [panel, arm]
+
+# 6) Tobera y anillos de expansión traseros
+noz = cone_x(300.0/2.0, 900.0/2.0, 800.0, cx=P["nose_len"]+P["mid_len"]+P["rear_len"] - 400.0)
+rear_ring = Part.makeTorus(P["ring_ro"], P["ring_th"])
+rear_ring.Placement = App.Placement(App.Vector(P["nose_len"]+P["mid_len"]+P["rear_len"] - 80.0, 0, 0),
+                                    App.Rotation(App.Vector(0,1,0),90))
+
+# 7) Fusión ordenada y metadatos
+to_fuse = [hull, nose_shell, back_cc, core_foam, front_cc, coat, edge_uhtc, tps_sup, lat, noz, rear_ring] \
+          + truss_shapes + rad_shapes
+
+fused = fuse_list(to_fuse).removeSplitter()
+obj = add_obj(fused, "Solar_Probe_Fused")
+
+# Asignación de materiales meta (visual)
+set_mat(obj, 'AL')  # metadato general del conjunto
+
+# Ajuste de vista
+try: Gui.ActiveDocument.ActiveView.fitAll()
+except: pass

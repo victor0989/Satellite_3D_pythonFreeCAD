@@ -1,0 +1,115 @@
+# -*- coding:utf-8 -*-
+import FreeCAD as App, Part, math
+
+# Documento
+doc_name = "Solar_Probe_Solid_Resistant"
+doc = App.newDocument(doc_name) if App.ActiveDocument is None or App.ActiveDocument.Label != doc_name else App.ActiveDocument
+
+# Parámetros (mm)
+P = {
+    "nose_len": 900.0,          # longitud nariz
+    "nose_base_d": 800.0,       # diámetro base nariz
+    "nose_tip_d": 6.0,          # diámetro mínimo del tip para evitar degeneración
+    "mid_len": 1600.0, "mid_d": 1100.0,
+    "rear_len": 1000.0, "rear_d": 1300.0,
+    "overlap": 1.0              # solape anti-tangencia
+}
+
+TPS = {
+    "tps_d": 2600.0,            # diámetro disco TPS
+    "c_faces_th": 10.0,         # espesor C/C cada cara
+    "foam_th": 140.0,           # núcleo aislante macizo
+    "ceramic_th": 2.0,          # recubrimiento blanco
+    "tps_gap": 180.0,           # separación desde nariz
+    "sup_L": 280.0,             # soporte cónico
+    "sup_d_base": 900.0, "sup_d_tip": 600.0
+}
+
+TRUSS = {"count": 4, "tube_d": 10.0, "tube_L": 220.0, "attach_R": 520.0,
+         "attach_cx": P["nose_len"] + P["mid_len"]*0.12}
+
+RAD = {"panel_w": 720.0, "panel_h": 520.0, "panel_th": 4.0, "count": 4}
+
+# Utilidades
+Y_AXIS = App.Vector(0,1,0)
+def rot_to_x(): return App.Rotation(Y_AXIS, 90)
+
+def valid_dim(*vals):
+    return all(v is not None and v > 0.0 for v in vals)
+
+def cyl_x(d, L, cx=0, cy=0, cz=0):
+    if not valid_dim(d, L): return None
+    c = Part.makeCylinder(d/2.0, L)
+    c.Placement = App.Placement(App.Vector(cx - L/2.0, cy, cz), rot_to_x())
+    return c
+
+def cone_x(d1, d2, L, cx=0, cy=0, cz=0):
+    # Evitar tip degenerado: asegurar d2 mínimo
+    d1 = max(d1, 0.5)
+    d2 = max(d2, 0.5)
+    if not valid_dim(d1, d2, L): return None
+    c = Part.makeCone(d1/2.0, d2/2.0, L)
+    c.Placement = App.Placement(App.Vector(cx - L/2.0, cy, cz), rot_to_x())
+    return c
+
+def box(w, d, h, cx=0, cy=0, cz=0):
+    if not valid_dim(w, d, h): return None
+    b = Part.makeBox(w, d, h)
+    b.Placement = App.Placement(App.Vector(cx - w/2.0, cy - d/2.0, cz - h/2.0), App.Rotation())
+    return b
+
+def fuse_list(shapes):
+    shapes = [s for s in shapes if s is not None and not s.isNull()]
+    if not shapes: raise ValueError("No hay shapes válidas para fusionar")
+    f = shapes[0]
+    for s in shapes[1:]:
+        f = f.fuse(s)
+        f = f.removeSplitter()
+    return f.removeSplitter()
+
+# 1) Fuselaje macizo (sin offsets)
+nose = cone_x(P["nose_base_d"], P["nose_tip_d"], P["nose_len"], cx=P["nose_len"]/2.0)
+mid  = cyl_x(P["mid_d"], P["mid_len"], cx=P["nose_len"] + P["mid_len"]/2.0)
+rear = cyl_x(P["rear_d"], P["rear_len"], cx=P["nose_len"] + P["mid_len"] + P["rear_len"]/2.0)
+hull_full = fuse_list([nose, mid, rear])
+
+# 2) TPS sándwich macizo
+tps_center = P["nose_len"] + TPS["tps_gap"] + TPS["sup_L"] + (TPS["c_faces_th"]*2 + TPS["foam_th"] + TPS["ceramic_th"])/2.0
+back_cc   = cyl_x(TPS["tps_d"], TPS["c_faces_th"], cx=tps_center - (TPS["foam_th"]/2.0 + TPS["c_faces_th"]/2.0 + TPS["ceramic_th"]/2.0))
+core      = cyl_x(TPS["tps_d"] - 8.0, TPS["foam_th"], cx=tps_center)   # margen perimetral
+front_cc  = cyl_x(TPS["tps_d"], TPS["c_faces_th"], cx=tps_center + (TPS["foam_th"]/2.0 + TPS["c_faces_th"]/2.0))
+coat      = cyl_x(TPS["tps_d"], TPS["ceramic_th"], cx=tps_center + (TPS["foam_th"]/2.0 + TPS["c_faces_th"] + TPS["ceramic_th"]/2.0))
+tps_sup   = cone_x(TPS["sup_d_base"], TPS["sup_d_tip"], TPS["sup_L"], cx=P["nose_len"] + TPS["tps_gap"] + TPS["sup_L"]/2.0)
+
+# 3) Truss (solapes reales)
+truss_shapes = []
+for i in range(TRUSS["count"]):
+    ang = 2*math.pi*i/TRUSS["count"]
+    y = TRUSS["attach_R"] * math.cos(ang)
+    z = TRUSS["attach_R"] * math.sin(ang)
+    tube = cyl_x(TRUSS["tube_d"], TRUSS["tube_L"], cx=TRUSS["attach_cx"], cy=y, cz=z)
+    truss_shapes.append(tube)
+
+# 4) Radiadores en umbra
+rad_shapes = []
+rad_cx = tps_center + TPS["c_faces_th"] + TPS["foam_th"] + TPS["ceramic_th"] + 220.0
+for i in range(RAD["count"]):
+    off_y = (i - (RAD["count"]-1)/2.0) * (RAD["panel_h"] + 40.0)
+    panel = box(RAD["panel_w"], RAD["panel_th"], RAD["panel_h"], cx=rad_cx + i*10.0, cy=off_y, cz=0.0)
+    rad_shapes.append(panel)
+
+# 5) Tobera trasera
+noz = cone_x(300.0, 900.0, P["rear_len"]/2.0, cx=P["nose_len"] + P["mid_len"] + P["rear_len"] - P["rear_len"]/4.0)
+
+# Fusión final
+to_fuse = [hull_full, back_cc, core, front_cc, coat, tps_sup, noz] + truss_shapes + rad_shapes
+solid = fuse_list(to_fuse)
+obj = doc.addObject("Part::Feature", "SolarProbe_Solid")
+obj.Shape = solid
+
+# Vista
+try:
+    import FreeCADGui as Gui
+    Gui.ActiveDocument.ActiveView.fitAll()
+except:
+    pass

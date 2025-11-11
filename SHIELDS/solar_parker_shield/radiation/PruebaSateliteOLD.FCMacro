@@ -1,0 +1,80 @@
+# -*- coding: utf-8 -*-
+# FreeCAD Macro: Escudos satélite 3D print
+# Autor: Víctor Alonso García + GPT-5-mini
+# Objetivo: Escudos térmico frontal + Whipple periférico reforzado + anillo de montaje
+# Exporta STL automáticamente
+
+import FreeCAD as App
+import Part
+import math
+import Mesh
+
+# ===================== Parámetros =====================
+# Escudo térmico frontal
+shield_front_r0 = 120.0  # radio exterior
+shield_front_r1 = 80.0   # radio base
+shield_front_h  = 20.0   # altura del cono
+
+# Escudo Whipple periférico
+whipple_r_outer  = 90.0
+whipple_length   = 140.0
+whipple_t_layer  = 3.0
+whipple_gap      = 6.0
+whipple_spokes   = 12
+
+# Anillo de montaje opcional
+mount_r_outer = 85.0
+mount_r_tube  = 2.5
+
+# ===================== Funciones =====================
+def export_shape_to_stl(shape, name):
+    """Exporta un shape a STL en el directorio de usuario"""
+    mesh = Mesh.Mesh()
+    mesh.addFacets(shape.tessellate(1))
+    mesh.write(App.getUserAppDataDir() + f"{name}.stl")
+    App.Console.PrintMessage(f"Exportado STL: {name}.stl\n")
+
+def make_whipple_skirt(r_outer, length, t_layer, gap, spokes=12):
+    """Crea un Whipple reforzado cilíndrico con soporte radial"""
+    # Capas
+    bumper = Part.makeCylinder(r_outer, length)
+    rear   = Part.makeCylinder(r_outer - t_layer - gap, length)
+    rear = rear.cut(Part.makeCylinder(r_outer - t_layer - gap - t_layer, length))
+    
+    # Soportes radiales
+    radial = []
+    for i in range(spokes):
+        ang = 2*math.pi*i/spokes
+        y = (r_outer - t_layer/2) * math.cos(ang)
+        z = (r_outer - t_layer/2) * math.sin(ang)
+        cyl = Part.makeCylinder(0.9, length, App.Vector(0,y,z), App.Vector(1,0,0))
+        radial.append(cyl)
+    
+    # Fusionar
+    skirt = bumper.fuse([rear] + radial)
+    return skirt
+
+# ===================== Documento =====================
+doc = App.newDocument("Satellite_Shields")
+
+# --- Escudo térmico frontal ---
+front_cone = Part.makeCone(shield_front_r0, shield_front_r1, shield_front_h)
+front_cone.translate(App.Vector(0,0,-shield_front_h/2))
+Part.show(front_cone)
+export_shape_to_stl(front_cone, "Thermal_Shield_Front")
+
+# --- Whipple periférico reforzado ---
+whipple_skirt = make_whipple_skirt(whipple_r_outer, whipple_length, whipple_t_layer, whipple_gap, whipple_spokes)
+whipple_skirt.translate(App.Vector(-whipple_length/2,0,0))
+Part.show(whipple_skirt)
+export_shape_to_stl(whipple_skirt, "Whipple_Skirt_Reinforced")
+
+# --- Anillo de montaje ---
+mount_ring = Part.makeTorus(mount_r_outer, mount_r_tube)
+mount_ring.translate(App.Vector(shield_front_h + 5,0,0))
+Part.show(mount_ring)
+export_shape_to_stl(mount_ring, "Mount_Ring")
+
+# --- Final ---
+doc.recompute()
+App.Console.PrintMessage("Macro de escudos completada. STL listas para impresión.\n")

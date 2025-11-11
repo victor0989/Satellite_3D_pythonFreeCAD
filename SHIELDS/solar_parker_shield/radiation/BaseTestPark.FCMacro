@@ -1,0 +1,435 @@
+# -*- coding: utf-8 -*-
+import FreeCAD as App, FreeCADGui as Gui
+import Part, math
+
+DOC_NAME = "HybridPlasmaPropulsion_CADStyle_v30"
+
+P = {
+    # Base del cuerpo (secciones existentes)
+    "body_sections": [(520.0,1200.0),(480.0,1120.0),(420.0,980.0),(500.0,1040.0),(600.0,1150.0),(400.0,1000.0)],
+    "body_edge_fillet": 3.0,
+
+    # Jacket helicoidal
+    "jacket_z0_offset": 260.0,
+    "jacket_length": 1600.0,
+    "jacket_inner_diam": 1000.0,
+    "jacket_outer_diam": 1150.0,
+    "helix_pitch": 240.0,
+    "helix_turns": 6,
+    "helix_channel_radius": 12.0,
+    "helix_margin_wall": 3.0,
+    "jacket_edge_fillet": 2.0,
+
+    # Boquilla
+    "nozzle_length": 800.0,
+    "nozzle_precone_ratio": 0.25,
+    "nozzle_main_ratio": 0.55,
+    "nozzle_exit_ratio": 0.20,
+    "nozzle_throat_diam": 360.0,
+    "nozzle_exit_diam": 600.0,
+    "nozzle_edge_fillet": 2.0,
+
+    # Brida y tornillería
+    "flange_thickness": 25.0,
+    "flange_width": 80.0,
+    "flange_pcd": 1050.0,
+    "bolt_count": 12,
+    "bolt_shaft_d": 14.0,
+    "bolt_head_d": 24.0,
+    "bolt_head_h": 8.0,
+    "bolt_len": 45.0,
+    "flange_edge_chamfer": 1.2,
+
+    # Radiadores anulares
+    "rad_ring_count": 4,
+    "rad_ring_outer_diam": 1400.0,
+    "rad_ring_width": 80.0,
+    "rad_ring_thickness": 5.0,
+    "rad_first_offset": 280.0,
+    "rad_spacing": 220.0,
+    "rad_edge_fillet": 1.0,
+
+    # Tanques laterales (si se quisieran activar más tarde)
+    "tank_diam": 450.0,
+    "tank_height": 1200.0,
+    "tank_clearance": 60.0,
+    "tank_angles_deg": [90.0,270.0],
+    "tank_z_center_offset": 0.0,
+    "tank_edge_fillet": 2.0,
+
+    # Módulos “quant” (estéticos/fines de detalle)
+    "quant_module_diam": 120.0,
+    "quant_module_height": 350.0,
+    "quant_module_count": 6,
+    "quant_radius_offset": 220.0,
+
+    # Ductos
+    "duct_width": 200.0,
+    "duct_height": 60.0,
+    "duct_length": 900.0,
+    "duct_pairs": 4,
+
+    # TPS y falda de paneles tipo Parker
+    "tps_hex_flat": 1600.0,          # distancia entre lados opuestos (flat-to-flat)
+    "tps_thickness": 90.0,           # bloque TPS
+    "tps_ablation_disk_th": 25.0,    # disco ablativo superior
+    "tps_edge_chamfer": 10.0,
+    "tps_overlap": 2.0,              # solape con falda/cuerpo
+
+    "skirt_panel_height": 900.0,
+    "skirt_panel_bottom_radius": 700.0,
+    "skirt_panel_count": 6,
+    "skirt_panel_th": 10.0,
+    "skirt_panel_overlap": 1.5,
+    "strut_radius": 20.0,
+    "strut_count_per_panel": 2,
+
+    # Antena tipo Cassini
+    "dish_radius": 450.0,
+    "dish_depth": 120.0,
+    "dish_thickness": 6.0,
+    "dish_tilt_deg": 18.0,
+    "mast_radius": 35.0,
+    "mast_length": 780.0,
+    "mast_bracket_th": 18.0,
+    "mast_bracket_width": 220.0,
+
+    # Plataforma y postes
+    "platform_size": 1800.0,
+    "platform_th": 40.0,
+    "platform_beam_width": 120.0,
+    "post_radius": 60.0,
+    "post_length": 400.0,
+    "post_overlap": 3.0,
+
+    # Tolerancias anti-tangencia
+    "epsilon_overlap": 1.0,
+
+    # Materiales
+    "mat_body": {"name":"Al6061-T6","density":2700.0,"color":(0.70,0.75,0.80)},
+    "mat_jacket": {"name":"GrapheneComp","density":1600.0,"color":(0.10,0.10,0.10)},
+    "mat_nozzle": {"name":"Ti6Al4V","density":4420.0,"color":(0.55,0.55,0.65)},
+    "mat_rings": {"name":"CFRP_Rad","density":1650.0,"color":(0.20,0.20,0.25)},
+    "mat_tank": {"name":"Inconel625","density":8440.0,"color":(0.45,0.50,0.55)},
+    "mat_quant": {"name":"CuW70","density":17250.0,"color":(0.60,0.40,0.20)},
+    "mat_duct": {"name":"PyroGraphite","density":2200.0,"color":(0.15,0.15,0.15)},
+    "mat_brkt": {"name":"Ti_Grade5","density":4430.0,"color":(0.55,0.55,0.60)},
+    "mat_bolt": {"name":"A286","density":7900.0,"color":(0.35,0.35,0.35)},
+
+    # Export/TechDraw
+    "make_techdraw": True,
+    "make_step_export": False,
+    "step_path": App.getUserAppDataDir()+"HybridPlasmaPropulsion_CADStyle_v30.step",
+}
+
+def get_doc():
+    d = App.ActiveDocument
+    if d is None or d.Name != DOC_NAME:
+        d = App.newDocument(DOC_NAME)
+    return d
+
+doc = get_doc()
+
+def set_material(o, m):
+    if "Density" not in o.PropertiesList:
+        o.addProperty("App::PropertyFloat","Density","Material","kg/m^3")
+    if "MaterialName" not in o.PropertiesList:
+        o.addProperty("App::PropertyString","MaterialName","Material","Nombre de material")
+    o.Density = float(m["density"])
+    o.MaterialName = m["name"]
+    o.ViewObject.ShapeColor = m["color"]
+
+def refine_shape(s):
+    try:
+        return s.removeSplitter()
+    except:
+        return s
+
+def add_feature(name, shape, mat=None, color=None, parent=None):
+    o = doc.addObject("Part::Feature", name)
+    o.Shape = shape
+    if mat: set_material(o, mat)
+    if color: o.ViewObject.ShapeColor = color
+    if parent: parent.addObject(o)
+    return o
+
+def fuse_list(objs, name, mat=None, color=None, parent=None):
+    if not objs: return None
+    base = objs[0].Shape
+    for o in objs[1:]:
+        base = refine_shape(base.fuse(o.Shape))
+    x = add_feature(name, refine_shape(base), mat, color, parent)
+    return x
+
+def add_cyl(name, r, h, z0, mat, parent=None):
+    s = Part.makeCylinder(r, h, App.Vector(0,0,z0))
+    return add_feature(name, s, mat, parent=parent)
+
+def add_cone(name, r1, r2, h, z0, mat, parent=None):
+    s = Part.makeCone(r1, r2, h, App.Vector(0,0,z0))
+    return add_feature(name, s, mat, parent=parent)
+
+def helix_channel_cut(jfeat, rp, pitch, turns, cr, z0, st=40):
+    h = pitch * float(turns)
+    if rp <= 0 or cr <= 0:
+        raise ValueError("r_path o channel_r no pueden ser negativos o cero.")
+    helix = Part.makeHelix(pitch, h, rp)
+    helix.Placement.Base = App.Vector(0,0,z0)
+    try:
+        pw = Part.Wire(helix)
+    except:
+        pw = helix
+
+    circ = Part.Circle(App.Vector(rp,0,z0), App.Vector(0,0,1), cr)
+    cw = Part.Wire([Part.Edge(circ)])
+    cf = Part.Face(cw)
+
+    sw = None
+    try:
+        sw = cf.makePipeShell([pw], True, True).makeSolid()
+    except:
+        try:
+            sw = cw.makePipe(pw)
+        except:
+            sw = None
+
+    if sw is None:
+        pts = helix.discretize(st*int(turns))
+        cyls = []
+        sl = h / (st*int(turns))
+        for p in pts:
+            try:
+                c = Part.makeCylinder(cr, sl, App.Vector(p.x, p.y, p.z))
+                cyls.append(c)
+            except:
+                pass
+        if cyls:
+            sw = cyls[0]
+            for c in cyls[1:]:
+                try:
+                    sw = refine_shape(sw.fuse(c))
+                except:
+                    pass
+
+    try:
+        jfeat.Shape = refine_shape(jfeat.Shape.cut(sw))
+    except Exception as e:
+        App.Console.PrintError(f"[helix_channel_cut] Error al restar canal: {e}\n")
+    return sw
+
+def make_body(P):
+    z0 = 0.0
+    bs = P["body_sections"]
+    sections = []
+    for i, (L, D) in enumerate(bs):
+        sections.append(Part.makeCylinder(D/2.0, L, App.Vector(0,0,z0)))
+        z0 += L
+    s = sections[0]
+    for c in sections[1:]:
+        s = refine_shape(s.fuse(c))
+    body = add_feature("Body", s, P["mat_body"])
+    return body, z0
+
+def add_edge_fillet(feat, r):
+    try:
+        feat.Shape = feat.Shape.makeFillet(r, feat.Shape.Edges)
+    except:
+        pass
+
+def make_tps_and_skirt(P, z_top):
+    # TPS hexagonal
+    flat = P["tps_hex_flat"]
+    R = flat / (2.0 * math.cos(math.pi/6.0))  # circumscribed radius
+    hex_profile = Part.makePolygon([
+        App.Vector(R*math.cos(a), R*math.sin(a), z_top)
+        for a in [k*math.pi/3.0 for k in range(7)]
+    ])
+    hex_face = Part.Face(hex_profile)
+    tps = hex_face.extrude(App.Vector(0,0,P["tps_thickness"]))
+    tps = refine_shape(tps)
+    tps = tps.makeChamfer(P["tps_edge_chamfer"], tps.Edges)
+
+    # Disco ablativo superior
+    ab_disk = Part.makeCylinder(R*0.95, P["tps_ablation_disk_th"], App.Vector(0,0,z_top + P["tps_thickness"]))
+    tps_total = refine_shape(tps.fuse(ab_disk))
+
+    tps_feat = add_feature("TPS", tps_total, P["mat_jacket"])
+
+    # Falda cónica de paneles
+    panels = []
+    struts = []
+    bottom_r = P["skirt_panel_bottom_radius"]
+    h = P["skirt_panel_height"]
+    th = P["skirt_panel_th"]
+    count = P["skirt_panel_count"]
+    eps = P["epsilon_overlap"]
+    for k in range(count):
+        ang = 2.0*math.pi*k/count
+        # Panel triangular aproximado: tramo cónico + espesor
+        cone = Part.makeCone(R - eps, bottom_r + eps, h, App.Vector(0,0,z_top - h))
+        # Cortar a sector angular
+        # Crear dos planos radiales para limitar el panel
+        v1 = App.Vector(math.cos(ang), math.sin(ang), 0)
+        v2 = App.Vector(math.cos(ang + 2*math.pi/count), math.sin(ang + 2*math.pi/count), 0)
+        plane1 = Part.Face(Part.Plane(App.Vector(0,0,0), v1))
+        plane2 = Part.Face(Part.Plane(App.Vector(0,0,0), v2))
+        try:
+            sect = refine_shape(cone.common(plane1.extrude(App.Vector(0,0,10000))).common(plane2.extrude(App.Vector(0,0,10000))))
+        except:
+            sect = cone
+        # Dar espesor: offset negativo
+        try:
+            panel = sect.makeThickness(th, 0.0001, True)
+        except:
+            # Fallback: extrusión leve
+            panel = sect.extrude(App.Vector(0,0,th))
+        panels.append(add_feature(f"SkirtPanel_{k+1}", panel, P["mat_jacket"]))
+
+        # Puntales (2 por panel): cilindros inclinados del TPS al cuerpo
+        for j in range(P["strut_count_per_panel"]):
+            frac = 0.35 + 0.25*j
+            top_pt = App.Vector((R-2*eps)*math.cos(ang+math.pi/count*0.5), (R-2*eps)*math.sin(ang+math.pi/count*0.5), z_top + P["tps_thickness"]*0.6)
+            bot_pt = App.Vector((bottom_r+eps)*math.cos(ang+math.pi/count*0.5), (bottom_r+eps)*math.sin(ang+math.pi/count*0.5), z_top - h + h*frac)
+            axis = bot_pt.sub(top_pt)
+            length = axis.Length
+            # Construir cilindro orientado
+            cs = Part.makeCylinder(P["strut_radius"], length, top_pt)
+            # Orientación: aproximación por bounding box (FreeCAD orient plane could be used; we keep axial alignment via sweep)
+            # Para robustez, proyectamos a Z y aceptamos inclinación visual; fusión asegura continuidad.
+            struts.append(add_feature(f"Strut_{k+1}_{j+1}", cs, P["mat_brkt"]))
+
+    skirt = fuse_list(panels + struts + [tps_feat], "TPS_Skirt_Assembly", P["mat_jacket"])
+    return skirt
+
+def make_jacket_with_helix(P, z0):
+    outer = Part.makeCylinder(P["jacket_outer_diam"]/2.0, P["jacket_length"], App.Vector(0,0,z0))
+    inner = Part.makeCylinder(P["jacket_inner_diam"]/2.0, P["jacket_length"], App.Vector(0,0,z0))
+    jacket = refine_shape(outer.cut(inner))
+    jacket_feat = add_feature("Jacket", jacket, P["mat_jacket"])
+    helix_channel_cut(jacket_feat, P["jacket_inner_diam"]/2.0 - P["helix_margin_wall"], P["helix_pitch"], P["helix_turns"], P["helix_channel_radius"], z0)
+    add_edge_fillet(jacket_feat, P["jacket_edge_fillet"])
+    return jacket_feat
+
+def make_nozzle(P, z0):
+    noz = Part.makeCone(P["nozzle_throat_diam"]/2.0, P["nozzle_exit_diam"]/2.0, P["nozzle_length"], App.Vector(0,0,z0))
+    noz_feat = add_feature("Nozzle", noz, P["mat_nozzle"])
+    add_edge_fillet(noz_feat, P["nozzle_edge_fillet"])
+    return noz_feat
+
+def make_radiator_rings(P, z0):
+    rings = []
+    for i in range(P["rad_ring_count"]):
+        z = z0 + P["rad_first_offset"] + i * P["rad_spacing"]
+        ro = P["rad_ring_outer_diam"]/2.0
+        ri = ro - P["rad_ring_width"]
+        tube = refine_shape(Part.makeCylinder(ro, P["rad_ring_thickness"], App.Vector(0,0,z)).cut(Part.makeCylinder(ri, P["rad_ring_thickness"], App.Vector(0,0,z)))
+        )
+        rfeat = add_feature(f"RadRing_{i+1}", tube, P["mat_rings"])
+        add_edge_fillet(rfeat, P["rad_edge_fillet"])
+        rings.append(rfeat)
+    return rings
+
+def make_flange_and_bolts(P, z_attach, base_radius):
+    flange_r_outer = base_radius + P["flange_width"]
+    flange = Part.makeCylinder(flange_r_outer, P["flange_thickness"], App.Vector(0,0,z_attach))
+    hub = Part.makeCylinder(base_radius, P["flange_thickness"] + P["epsilon_overlap"], App.Vector(0,0,z_attach - P["epsilon_overlap"]))
+    flange = refine_shape(flange.fuse(hub))
+    ffeat = add_feature("Flange", flange, P["mat_brkt"])
+    # Tornillería
+    bolts = []
+    for i in range(P["bolt_count"]):
+        ang = 2.0*math.pi*i/P["bolt_count"]
+        x = (P["flange_pcd"]/2.0) * math.cos(ang)
+        y = (P["flange_pcd"]/2.0) * math.sin(ang)
+        shaft = Part.makeCylinder(P["bolt_shaft_d"]/2.0, P["bolt_len"], App.Vector(x,y,z_attach))
+        head = Part.makeCylinder(P["bolt_head_d"]/2.0, P["bolt_head_h"], App.Vector(x,y,z_attach + P["bolt_len"]))
+        bolt = refine_shape(shaft.fuse(head))
+        bolts.append(add_feature(f"Bolt_{i+1}", bolt, P["mat_bolt"]))
+    bolts_fused = fuse_list(bolts, "Bolts_All", P["mat_bolt"])
+    return fuse_list([ffeat, bolts_fused], "FlangeWithBolts", P["mat_brkt"])
+
+def make_dish_and_mast(P, z_ref, attach_radius):
+    # Plato parabólico aproximado por revolución
+    R = P["dish_radius"]
+    d = P["dish_depth"]
+    # Perfil parabólico y espesor
+    pts = [App.Vector(0,0,0), App.Vector(R,0,d)]
+    parab_line = Part.makeLine(*pts)
+    arc_wire = Part.Wire([parab_line])
+    dish_solid = arc_wire.revolve(App.Vector(0,0,0), App.Vector(0,0,1), 360)
+    # Espesor del plato (cap)
+    rim = Part.makeCylinder(R, P["dish_thickness"], App.Vector(0,0,0))
+    dish = refine_shape(dish_solid.fuse(rim))
+    # Reubicar: tilt y altura
+    tilt = math.radians(P["dish_tilt_deg"])
+    dish.translate(App.Vector(attach_radius*0.6, 0, z_ref + d*0.5))
+    # Mástil
+    mast = Part.makeCylinder(P["mast_radius"], P["mast_length"], App.Vector(attach_radius*0.6, 0, z_ref - P["mast_length"]*0.2))
+    # Bracket base
+    brkt = Part.makeBox(P["mast_bracket_width"], P["mast_bracket_width"], P["mast_bracket_th"], App.Vector(attach_radius*0.4, -P["mast_bracket_width"]/2.0, z_ref - P["mast_bracket_th"]/2.0))
+    assembly = refine_shape(dish.fuse(mast).fuse(brkt))
+    return add_feature("DishAssembly", assembly, P["mat_brkt"])
+
+def make_platform_and_posts(P, z_base):
+    size = P["platform_size"]
+    th = P["platform_th"]
+    plate = Part.makeBox(size, size, th, App.Vector(-size/2.0, -size/2.0, z_base - th))
+    # Travesaños (dos, cruz)
+    beam_w = P["platform_beam_width"]
+    beam = Part.makeBox(size, beam_w, th, App.Vector(-size/2.0, -beam_w/2.0, z_base - th))
+    beam2 = Part.makeBox(beam_w, size, th, App.Vector(-beam_w/2.0, -size/2.0, z_base - th))
+    base = refine_shape(plate.fuse(beam).fuse(beam2))
+    base_feat = add_feature("Platform", base, P["mat_brkt"])
+    # Postes en esquinas con solape
+    posts = []
+    pr = P["post_radius"]
+    pl = P["post_length"]
+    ov = P["post_overlap"]
+    for sx in [-1,1]:
+        for sy in [-1,1]:
+            x = sx*(size/2.0 - pr*1.2)
+            y = sy*(size/2.0 - pr*1.2)
+            post = Part.makeCylinder(pr, pl + ov, App.Vector(x, y, z_base - th - ov))
+            posts.append(add_feature(f"Post_{sx}_{sy}", post, P["mat_brkt"]))
+    posts_all = fuse_list(posts, "Posts_All", P["mat_brkt"])
+    return fuse_list([base_feat, posts_all], "PlatformAssembly", P["mat_brkt"])
+
+def main(P):
+    # Reset doc
+    for o in list(doc.Objects):
+        doc.removeObject(o.Name)
+
+    body, z_top = make_body(P)
+    add_edge_fillet(body, P["body_edge_fillet"])
+
+    # TPS + falda
+    tps_skirt = make_tps_and_skirt(P, z_top + P["jacket_z0_offset"])
+
+    # Jacket con canal helicoidal
+    jacket = make_jacket_with_helix(P, z_top)
+
+    # Boquilla (debajo del cuerpo)
+    nozzle = make_nozzle(P, z_top + P["jacket_length"])
+
+    # Radiadores
+    rings = make_radiator_rings(P, z_top)
+
+    # Brida y tornillería en base del jacket
+    flange = make_flange_and_bolts(P, z_top - P["epsilon_overlap"], P["jacket_inner_diam"]/2.0)
+
+    # Antena y mástil anclados al jacket
+    dish = make_dish_and_mast(P, z_top + P["jacket_length"]*0.3, P["jacket_outer_diam"]/2.0)
+
+    # Plataforma inferior y postes
+    platform = make_platform_and_posts(P, z_top - 200.0)
+
+    # Fusión ordenada
+    assembly = fuse_list([body, jacket, tps_skirt, nozzle, flange, dish] + rings + [platform],
+                         "Spacecraft_Assembly_Fused", P["mat_body"])
+
+    doc.recompute()
+    App.Console.PrintMessage("CADStyle Spacecraft: Generado y fusionado correctamente.\n")
+    return assembly
+
+if __name__ == "__main__":
+    main(P)
