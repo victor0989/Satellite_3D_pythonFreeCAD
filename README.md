@@ -1,153 +1,133 @@
 # Satellite_3D_pythonFreeCAD
 Python Satellite parts. Engineering with python
 
-1. Overview
+# Satellite_3D_pythonFreeCAD
+
+**Python Satellite Parts. Engineering with Python**  
+Parametric 3D satellite components modeled and simulated using **Python** and **FreeCAD**.
+
+---
+
+## 1. Overview
 
 This repository contains parametric 3D models and engineering references for a small satellite concept designed for Python-based simulation and FreeCAD modeling.
 
-2. Structure and Dimensions
+---
 
-Diameter: ≈ 2.4 m (8 ft)
+## 2. Structure and Dimensions
 
-Total Thickness: ≈ 11.4 cm (4.5 in)
+- **Diameter:** ≈ 2.4 m (8 ft)  
+- **Total Thickness:** ≈ 11.4 cm (4.5 in)  
+- **Weight:** ≈ 72 kg (160 lb)
 
-Weight: ≈ 72 kg (160 lb)
+---
 
-3. Main Layers
-3.1 Sun Face (Front)
+## 3. Main Layers
 
-Material: High-density carbon–carbon (C/C)
+### 3.1 Sun Face (Front)
 
-Surface: White ceramic coating for high reflectivity and low absorption
+- **Material:** High-density carbon–carbon (C/C)  
+- **Surface:** White ceramic coating for high reflectivity and low absorption  
 
-3.2 Insulating Core
+### 3.2 Insulating Core
 
-Composition: Carbon foam (≈97% air)
+- **Composition:** Carbon foam (≈97% air)  
+- **Function:** Thermal insulation with very low conductivity  
 
-Function: Thermal insulation with very low conductivity
+### 3.3 Rear Face (Back)
 
-3.3 Rear Face (Back)
+- **Material:** Structural carbon–carbon  
+- **Purpose:** Load-bearing and stress transmission to truss  
 
-Material: Structural carbon–carbon
+---
 
-Purpose: Load-bearing and stress transmission to truss
+## 4. Structural Support
 
-4. Structural Support
+- Metal truss welded at six points  
+- Optimized for minimal heat conduction to the satellite bus  
 
-Metal truss welded at six points
+---
 
-Optimized for minimal heat conduction to the satellite bus
+## 5. Thermal Performance
 
-5. Thermal Performance
+- **Sun Face Temperature:** ≈ 1370°C (2500°F)  
+- **Instrument Zone Temperature:** ≈ 30°C (85°F)
 
-Sun Face Temperature: ≈ 1370°C (2500°F)
+---
 
-Instrument Zone Temperature: ≈ 30°C (85°F)
+## 6. Electrolysis Utilities and Tank Structures
 
-6. Electrolysis Utilities and Tank Structures
+- **Central Frame:** Titanium isogrid (2.5 m length, 1.2 m diameter)  
+- **Outer Shell:** Carbon–carbon with tungsten–carbide thermal coating  
+- **Nose Shield:** Conical, front-mounted  
+- **Interior:** Mounting rails, fasteners, and cutaway sections for visualization  
 
-Central Frame: Titanium isogrid (2.5 m length, 1.2 m diameter)
+---
 
-Outer Shell: Carbon–carbon with tungsten–carbide thermal coating
+## 7. Solar and Power Systems
 
-Nose Shield: Conical, front-mounted
+- **Solar Arrays:** Two foldable panels (CIGS thin-film on Kapton), 5×2.5 m each  
+- **Articulation:** Hinged connection with flexible power conduits  
+- **Reactor:** Integrated solar radiolysis–electrolysis hybrid core  
+- **Photon Concentration:** Lenses focusing sunlight into reactor chamber  
+- **Power Flow:** Panels → Electrolysis Stack → Power Pod  
 
-Interior: Mounting rails, fasteners, and cutaway sections for visualization
+---
 
-7. Solar and Power Systems
+## 8. Life Support and Fluid Systems
 
-Solar Arrays: Two foldable panels (CIGS thin-film on Kapton), 5×2.5 m each
+- **Water Tank:** Titanium, semi-transparent, 1.5×0.8 m  
+- **Electrolysis Stack:** PEM plates for H₂O → H₂ + O₂  
+- **O₂ Storage Pod:** Composite overwrapped vessel  
+- **H₂ Storage Pod:** Composite overwrapped vessel  
 
-Articulation: Hinged connection with flexible power conduits
+**Flow Paths:**
+- Blue: Water  
+- Green: Oxygen  
+- Orange: Hydrogen  
 
-Reactor: Integrated solar radiolysis–electrolysis hybrid core
+---
 
-Photon Concentration: Lenses focusing sunlight into reactor chamber
+## 9. Propulsion Module
 
-Power Flow: Panels → Electrolysis Stack → Power Pod
+- **Main Engine:** Plasma ion thruster with magnetic nozzle and ring coils  
+- **Auxiliary System:** Resistojet with water vapor injector  
+- **Thermal Management:** Radiator fins with visible coolant loops  
 
-8. Life Support and Fluid Systems
+---
 
-Water Tank: Titanium, semi-transparent, 1.5×0.8 m
+## 10. Crew and Habitat Module
 
-Electrolysis Stack: PEM plates for H₂O → H₂ + O₂
+- **Capsule Dimensions:** 2 m length × 2 m diameter  
+- **Interior:** Seat, control terminal, lighting, CO₂ scrubbers, water recycling  
+- **Shielding:** Boron polymer and water jacket layers  
 
-O₂ Storage Pod: Composite overwrapped vessel
+---
 
-H₂ Storage Pod: Composite overwrapped vessel
+## 11. Docking and Tracking System
 
-Flow Paths:
+- **Docking Port:** ISS-compatible (APAS/IDSS standard)  
+- **Mechanisms:** Magnetic clamps, latching rings, guidance cameras  
+- **Tracking:** LIDAR and optical sensors on side-mounted arms  
+- **RCS Thrusters:** For fine alignment during docking  
 
-Blue: Water
+---
 
-Green: Oxygen
+## 12. Electronics and Avionics
 
-Orange: Hydrogen
+- **Dry Avionics Pod:** Titanium case with connectors  
+- **Wet Power Pod:** SiC MOSFETs cooled in dielectric oil  
+- **Data and Thermal Lines:** Routed along internal frame  
 
-9. Propulsion Module
+---
 
-Main Engine: Plasma ion thruster with magnetic nozzle and ring coils
+## 13. Third Shield Materials
 
-Auxiliary System: Resistojet with water vapor injector
+### Carbon–Carbon (C/C)
+- Thermal resistance >3000 K  
+- High mechanical stability  
 
-Thermal Management: Radiator fins with visible coolant loops
+### Carbon Foam
+- Ultra-lightweight, low conductivity  
+- S
 
-10. Crew and Habitat Module
-
-Capsule Dimensions: 2 m length × 2 m diameter
-
-Interior: Seat, control terminal, lighting, CO₂ scrubbers, water recycling
-
-Shielding: Boron polymer and water jacket layers
-
-11. Docking and Tracking System
-
-Docking Port: ISS-compatible (APAS/IDSS standard)
-
-Mechanisms: Magnetic clamps, latching rings, guidance cameras
-
-Tracking: LIDAR and optical sensors on side-mounted arms
-
-RCS Thrusters: For fine alignment during docking
-
-12. Electronics and Avionics
-
-Dry Avionics Pod: Titanium case with connectors
-
-Wet Power Pod: SiC MOSFETs cooled in dielectric oil
-
-Data and Thermal Lines: Routed along internal frame
-
-13. Third Shield Materials
-
-Carbon–Carbon (C/C):
-
-Thermal resistance >3000 K
-
-High mechanical stability
-
-Carbon Foam:
-
-Ultra-lightweight, low conductivity
-
-Supports thermal gradients
-
-Ceramic Coating (SiO₂/ZrO₂):
-
-Albedo ≈ 0.7
-
-Reduces solar irradiance absorption
-
-Structural Metals:
-
-Titanium or stainless steel for truss
-
-Low thermal conductivity, high mechanical strength
-
-14. Tools and Dependencies
-
-FreeCAD (for 3D modeling)
-
-Python ≥ 3.10 (for parametric design and automation)
-
-NumPy / SciPy (for calculations and simulations)
