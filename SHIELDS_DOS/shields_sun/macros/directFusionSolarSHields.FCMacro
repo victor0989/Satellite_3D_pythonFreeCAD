@@ -1,0 +1,300 @@
+# -*- coding: utf-8 -*-
+import FreeCAD as App, FreeCADGui as Gui, Part, math
+
+DOC_NAME = "ExtremeShield_Probe_Printable"
+if App.ActiveDocument is None or App.ActiveDocument.Label != DOC_NAME:
+    App.newDocument(DOC_NAME)
+doc = App.ActiveDocument
+
+# Parámetros base (ampliados para una nave/satélite mayor y más sólida)
+P = {
+    # Geometría general (agrandada)
+    "nose_len": 1000.0, "nose_base_d": 1400.0, "nose_cap_d": 720.0,
+    "mid_len": 3000.0, "mid_d": 2200.0,
+    "rear_len": 2200.0, "rear_d": 2600.0,
+    "hull_fillet_r": 28.0,
+
+    # Propulsión (más grande)
+    "reactor_d": 1800.0, "reactor_l": 2600.0, "reactor_cx": 4200.0,
+    "nozzle_throat_d": 720.0, "nozzle_exit_d": 2600.0, "nozzle_l": 2400.0,
+    "nozzle_cx": 5200.0, "nozzle_fillet_r": 120.0,
+
+    # Blindajes (macizos, robustos)
+    "front_tps_r": 2000.0, "front_tps_t": 320.0, "front_tps_bevel": 140.0, "front_tps_gap": 160.0,
+    "rear_tps_r": 1800.0, "rear_tps_t": 260.0, "rear_tps_bevel": 120.0, "rear_tps_gap": 120.0,
+    "ring_guard_r": 2600.0, "ring_guard_w": 220.0, "ring_guard_t": 200.0,
+
+    # Radiadores reforzados
+    "rad_panel_w": 1400.0, "rad_panel_h": 120.0, "rad_panel_t": 36.0, "rad_panel_count": 10, "rad_spacing": 180.0,
+
+    # Refuerzos
+    "band_w": 200.0, "band_t": 48.0, "bands_n": 8, "band_fillet_r": 18.0,
+    "truss_n": 16, "truss_tube_w": 220.0, "truss_len": 1600.0,
+
+    # Detalles extra (sensores, mástil, antena)
+    "mast_l": 1600.0, "mast_r": 60.0,
+    "dish_r": 700.0,
+
+    # Blindajes solares y accesorios (multicapa, Whipple, pétalos)
+    "solar_shield_layers": 4,
+    "solar_shield_layer_t": [80.0, 48.0, 28.0, 16.0],
+    "solar_shield_gap": 10.0,
+    "solar_shield_offset": 140.0,
+    "solar_shield_length_factor": 1.08,  # factor respecto a mid_len
+
+    "whipple_disks": 6,
+    "whipple_spacing": 80.0,
+    "whipple_r_extra": 120.0,
+    "whipple_t": 28.0,
+    "whipple_front_overlap": 28.0,
+
+    "sunshield_petals": 10,
+    "petal_w": 1200.0,
+    "petal_h": 36.0,
+    "petal_l": 2200.0,
+    "petal_offset": 80.0,
+    "petal_overlap_center": 48.0,
+
+    # Unificación final
+    "make_unified_solid": True
+}
+
+def rot_to_x():
+    return App.Rotation(App.Vector(0,1,0), 90)
+
+def add_obj(shape, label, color=(0.70,0.70,0.72)):
+    o = doc.addObject("Part::Feature", label)
+    o.Shape = shape
+    try:
+        o.ViewObject.ShapeColor = color
+        o.ViewObject.DisplayMode = "Shaded"
+    except:
+        pass
+    return o
+
+def safe_fillet(shape, r):
+    try:
+        # Fillet sobre todas las aristas existentes; si falla, devuelve original
+        return shape.makeFillet(r, shape.Edges)
+    except Exception:
+        return shape
+
+def make_cyl_x(d, L, cx=0, cy=0, cz=0):
+    c = Part.makeCylinder(d/2.0, L)
+    c.Placement = App.Placement(App.Vector(cx - L/2.0, cy, cz), rot_to_x())
+    return c
+
+def make_cone_x(d1, d2, L, cx=0, cy=0, cz=0):
+    c = Part.makeCone(d1/2.0, d2/2.0, L)
+    c.Placement = App.Placement(App.Vector(cx - L/2.0, cy, cz), rot_to_x())
+    return c
+
+# --- Construcción del fuselaje (macizo y con filetes) ---
+def make_nose_loft():
+    sections = []
+    radii = [P["nose_base_d"]/2.0, P["nose_base_d"]/2.0 * 0.75, 520.0, P["nose_cap_d"]/2.0]
+    xpos   = [0, P["nose_len"]*0.33, P["nose_len"]*0.66, P["nose_len"]]
+    for r, x in zip(radii, xpos):
+        sections.append(Part.makeCircle(r, App.Vector(x,0,0), App.Vector(1,0,0)))
+    loft = Part.makeLoft(sections, True)
+    return loft
+
+nose = make_nose_loft()
+mid  = make_cyl_x(P["mid_d"], P["mid_len"], cx=P["nose_len"])
+rear = make_cyl_x(P["rear_d"], P["rear_len"], cx=P["nose_len"] + P["mid_len"])
+fuselage = nose.fuse(mid).fuse(rear)
+fuselage = safe_fillet(fuselage, P["hull_fillet_r"])
+hull_obj = add_obj(fuselage, "Hull_Solid", color=(0.76,0.76,0.78))
+
+# Blindaje frontal masivo (disco + bisel), desplazado delante del fuselaje
+front_disc  = Part.makeCylinder(P["front_tps_r"], P["front_tps_t"] + 4.0)
+front_bevel = Part.makeCone(P["front_tps_r"], P["front_tps_r"] - P["front_tps_bevel"], P["front_tps_bevel"])
+front_tps   = front_disc.fuse(front_bevel)
+front_tps.Placement = App.Placement(App.Vector(-P["front_tps_t"] - P["front_tps_gap"] - 8.0, 0, 0), rot_to_x())
+front_tps = safe_fillet(front_tps, 6.0)
+front_tps_obj = add_obj(front_tps, "Front_TPS", color=(0.46,0.48,0.50))
+
+# Blindaje trasero (disco + bisel) alrededor de la tobera
+rear_disc  = Part.makeCylinder(P["rear_tps_r"], P["rear_tps_t"] + 4.0)
+rear_bevel = Part.makeCone(P["rear_tps_r"], P["rear_tps_r"] - P["rear_tps_bevel"], P["rear_tps_bevel"])
+rear_tps   = rear_disc.fuse(rear_bevel)
+rear_x = P["nose_len"] + P["mid_len"] + P["rear_len"] + P["rear_tps_gap"] + 6.0
+rear_tps.Placement = App.Placement(App.Vector(rear_x, 0, 0), rot_to_x())
+rear_tps = safe_fillet(rear_tps, 6.0)
+rear_tps_obj = add_obj(rear_tps, "Rear_TPS", color=(0.46,0.48,0.50))
+
+# Anillo protector alrededor del rear
+ring_outer = Part.makeCylinder(P["ring_guard_r"], P["ring_guard_w"] + 4.0)
+ring_inner = Part.makeCylinder(P["ring_guard_r"] - P["ring_guard_t"], P["ring_guard_w"] + 6.0)
+ring = ring_outer.cut(ring_inner)
+ring.Placement = App.Placement(App.Vector(P["nose_len"] + P["mid_len"] + P["rear_len"] - P["ring_guard_w"]/2.0, 0, 0), rot_to_x())
+ring = safe_fillet(ring, 8.0)
+ring_obj = add_obj(ring, "Rear_Guard_Ring", color=(0.58,0.60,0.62))
+
+# Propulsión (garganta + tobera) maciza y fileteada
+throat = make_cyl_x(P["nozzle_throat_d"], 320.0, cx=P["nozzle_cx"] - P["nozzle_l"]/2.0 - 160.0)
+cone   = make_cone_x(P["nozzle_throat_d"], P["nozzle_exit_d"], P["nozzle_l"], cx=P["nozzle_cx"])
+cone   = safe_fillet(cone, P["nozzle_fillet_r"])
+nozzle = throat.fuse(cone)
+nozzle_obj = add_obj(nozzle, "Main_Nozzle", color=(0.68,0.70,0.72))
+
+reactor_core = make_cyl_x(P["reactor_d"], P["reactor_l"], cx=P["reactor_cx"])
+reactor_obj  = add_obj(reactor_core, "Reactor_Core", color=(0.66,0.68,0.70))
+
+# Radiadores laterales reforzados (placas macizas, en pila)
+rads = []
+for i in range(P["rad_panel_count"]):
+    z = -P["rad_panel_h"]/2.0 + i*P["rad_spacing"]
+    r = Part.makeBox(P["rad_panel_w"] + 8.0, P["rad_panel_t"] + 4.0, P["rad_panel_h"] + 8.0)
+    r.Placement = App.Placement(App.Vector(P["nose_len"] + P["mid_len"] + 120.0, -P["rear_d"]/2.0 - 140.0, z), App.Rotation())
+    rads.append(safe_fillet(r, 4.0))
+rad_union = rads[0]
+for r in rads[1:]:
+    rad_union = rad_union.fuse(r)
+rad_obj = add_obj(rad_union, "Radiator_Panels", color=(0.62,0.64,0.68))
+
+# Bandas estructurales (solapadas y fileteadas)
+bands = []
+pitch = (P["mid_len"] + P["rear_len"] - 2*P["band_w"]) / max(1, P["bands_n"])
+for i in range(P["bands_n"]):
+    b = Part.makeCylinder(P["mid_d"]/2.0 + P["band_t"] + 2.0, P["band_w"])
+    b.Placement = App.Placement(App.Vector(P["nose_len"] + i*pitch, 0, 0), rot_to_x())
+    bands.append(b)
+band_union = bands[0]
+for b in bands[1:]:
+    band_union = band_union.fuse(b)
+band_union = safe_fillet(band_union, P["band_fillet_r"])
+bands_obj  = add_obj(band_union, "Structural_Bands", color=(0.64,0.64,0.66))
+
+# Truss simplificado (volumen macizo) con solape axial
+truss_parts = []
+for i in range(P["truss_n"]):
+    t = Part.makeBox(P["truss_len"] + 40.0, P["truss_tube_w"] + 40.0, P["truss_tube_w"] + 40.0)
+    t.Placement = App.Placement(App.Vector(P["nose_len"] + (i*(P["truss_len"]/2.0)) * 0.02, 0, 0), App.Rotation())
+    truss_parts.append(safe_fillet(t, 6.0))
+truss_shape = truss_parts[0]
+for t in truss_parts[1:]:
+    truss_shape = truss_shape.fuse(t)
+truss_obj = add_obj(truss_shape, "Truss_Armor", color=(0.58,0.58,0.60))
+
+# Mástil y antena (macizos y sobredimensionados)
+mast = make_cyl_x(P["mast_r"]*2.5, P["mast_l"], cx=P["nose_len"] + P["mid_len"]/2.0)
+mast_obj = add_obj(mast, "Mast", color=(0.60,0.62,0.64))
+
+dish = Part.makeCone(0, P["dish_r"], 90.0)
+dish.Placement = App.Placement(App.Vector(P["nose_len"] + P["mid_len"]/2.0 + P["mast_l"] + 20.0, 0, 0), rot_to_x())
+dish_obj = add_obj(dish, "Antenna_Dish", color=(0.65,0.67,0.70))
+
+# --- Nuevo: Blindajes solares multicapa, discos Whipple y pétalos solidos ---
+# Parámetros derivados
+shield_length = P["mid_len"] * P["solar_shield_length_factor"] + 24.0
+base_r = P["mid_d"]/2.0 + P["solar_shield_offset"]
+cx_mid = P["nose_len"] + P["mid_len"]/2.0
+
+# Capas concéntricas (con pequeños solapes axiales y radiales para evitar huecos)
+solar_layers = []
+r_current = base_r - 4.0
+layer_ts = P["solar_shield_layer_t"]
+gap = P["solar_shield_gap"]
+
+for i in range(int(P["solar_shield_layers"])):
+    t = layer_ts[i] if i < len(layer_ts) else layer_ts[-1]
+    outer = Part.makeCylinder(r_current + t + 1.5, shield_length + 8.0)
+    inner = Part.makeCylinder(max(1.0, r_current - 2.0), shield_length + 10.0)
+    layer = outer.cut(inner)
+    layer.Placement = App.Placement(App.Vector(cx_mid - (shield_length+8.0)/2.0, 0, 0), rot_to_x())
+    solar_layers.append(safe_fillet(layer, min(18.0, t/2.0)))
+    r_current += t + gap
+
+# Fusionar capas en una sola pieza
+if solar_layers:
+    solar_union = solar_layers[0]
+    for s in solar_layers[1:]:
+        solar_union = solar_union.fuse(s)
+else:
+    solar_union = Part.makeBox(0,0,0)
+solar_obj = add_obj(solar_union, "Solar_Shield_Layers", color=(0.88,0.82,0.60))
+
+# Discos Whipple delante de la nariz (con solape frontal)
+whipple_disks = []
+n_whipple = int(P["whipple_disks"])
+spacing = P["whipple_spacing"]
+# radio basado en la parte frontal mayor del fuselaje
+disk_r = max(P["nose_cap_d"]/2.0, P["nose_base_d"]/2.0) + P["whipple_r_extra"]
+disk_t = P["whipple_t"]
+start_x = -P["front_tps_t"] - P["front_tps_gap"] - P["whipple_front_overlap"]
+
+for i in range(n_whipple):
+    d = Part.makeCylinder(disk_r + 2.0, disk_t + 4.0)
+    d.Placement = App.Placement(App.Vector(start_x - i * spacing, 0, 0), rot_to_x())
+    whipple_disks.append(safe_fillet(d, 6.0))
+
+if whipple_disks:
+    whipple_union = whipple_disks[0]
+    for d in whipple_disks[1:]:
+        whipple_union = whipple_union.fuse(d)
+else:
+    whipple_union = Part.makeBox(0,0,0)
+whipple_obj = add_obj(whipple_union, "Whipple_Disks", color=(0.72,0.68,0.60))
+
+# Pétalos solares robustos, sólidos y solapados con el casco
+petals = []
+n_petals = int(P["sunshield_petals"])
+petal_w = P["petal_w"]
+petal_h = P["petal_h"]
+petal_l = P["petal_l"]
+petal_off = P["petal_offset"]
+center_x = cx_mid + P["mid_len"]/2.0 + 16.0
+
+for i in range(n_petals):
+    # caja representando petalo (ligeramente mayor para solape)
+    petal = Part.makeBox(petal_l + 8.0, petal_h + 6.0, petal_w + 8.0)
+    ang_deg = i * 360.0 / max(1, n_petals)
+    ang_rad = math.radians(ang_deg)
+    radial_dist = P["mid_d"]/2.0 + petal_w/2.0 + petal_off - P["petal_overlap_center"]
+    y = math.cos(ang_rad) * radial_dist
+    z = math.sin(ang_rad) * radial_dist
+    rot = App.Rotation(App.Vector(1,0,0), ang_deg)
+    petal.Placement = App.Placement(App.Vector(center_x, y, z), rot)
+    petals.append(safe_fillet(petal, 6.0))
+
+if petals:
+    petals_union = petals[0]
+    for p in petals[1:]:
+        petals_union = petals_union.fuse(p)
+else:
+    petals_union = Part.makeBox(0,0,0)
+petals_obj = add_obj(petals_union, "Sunshield_Petals", color=(0.96,0.92,0.60))
+
+# --- Fin blindajes adicionales ---
+
+# Unificación final en un único sólido, con intentos de hacer sólido cerrado
+if P["make_unified_solid"]:
+    objs = [hull_obj, front_tps_obj, rear_tps_obj, ring_obj,
+            reactor_obj, nozzle_obj, rad_obj, bands_obj, truss_obj, mast_obj, dish_obj,
+            solar_obj, whipple_obj, petals_obj]
+    # empezar fusión iterativa
+    final = objs[0].Shape
+    for o in objs[1:]:
+        try:
+            final = final.fuse(o.Shape)
+        except Exception:
+            # si hay conflicto, intentar fusionar como compound (fallback)
+            final = final.fuse(o.Shape)
+    # intentar convertir a sólido (puede fallar si hay huecos)
+    final_obj = None
+    try:
+        # Intento prudente: crear shell/solid si el resultado es una shell válida
+        solid_try = Part.Solid(final)
+        final_solid = Part.makeSolid(solid_try)
+        final_obj = add_obj(final_solid, "Unified_ExtremeShield_Probe", color=(0.72,0.72,0.74))
+    except Exception:
+        try:
+            # alternativa: intentar crear un compound (al menos queda una sola entidad)
+            final_comp = Part.Compound([final])
+            final_obj = add_obj(final_comp, "Unified_ExtremeShield_Probe_Compound", color=(0.72,0.72,0.74))
+        except Exception:
+            # fallback último: añadir la fusión tal cual
+            final_obj = add_obj(final, "Unified_ExtremeShield_Probe_Fused", color=(0.72,0.72,0.74))
+
+doc.recompute()
