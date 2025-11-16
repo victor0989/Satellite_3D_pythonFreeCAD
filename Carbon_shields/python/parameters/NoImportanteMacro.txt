@@ -1,0 +1,38 @@
+import FreeCAD as App, FreeCADGui as Gui, Part, math
+
+doc_name = "Direct_Fusion_Drive"
+if App.ActiveDocument is None or App.ActiveDocument.Label != doc_name:
+    App.newDocument(doc_name)
+doc = App.ActiveDocument
+
+# ============
+# Parámetros
+# ============
+
+P = {
+    # Fuselaje
+    "nose_len": 800.0, "nose_base_d": 600.0,
+    "mid_len": 1400.0, "mid_d": 900.0,
+    "rear_len": 800.0, "rear_d": 1200.0,
+    "hull_t": 10.0,
+ 
+    # Cabina
+    "cockpit_w": 900.0, "cockpit_h": 400.0, "cockpit_l": 600.0, "cockpit_x0": 600.0,
+
+    # ventanas
+    "win_w": 600.0, "win_h": 250.0, "win_th": 20.0,
+    "win_y_off": 0.5*(900.0/2.0 - 250.0/2.0), "win_z": 0.0,
+
+    # Reactor
+    "reactor_d": 800.0, "reactor_l": 900.0, "reactor_cx": 2600.0,
+    "ring_h": 30.0, "ring_ro": 420.0, "ring_ri": 380.0, "ring_n": 6, "ring_pitch": 150.0,
+
+# Coils
+"coil_rect_w": 80.0, "coil_rect_h": 80.0, "coil_R": 440.0,
+"coil_n": 4, "coil_span": 800.0,
+
+
+# Blindajes
+"moderator_t": 100.0, "moderator_gap": 20.0, "moderator_over": 200.0,
+"tungsten_post_t": 10.0,
+
